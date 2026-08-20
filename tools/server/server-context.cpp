@@ -2573,6 +2573,27 @@ private:
                         break;
                     }
 
+                    // [qwen38-prefill-ttft] create a context checkpoint covering the
+                    // restored range so hybrid/recurrent models can reuse the restored
+                    // state on the next request. Slot save files carry the full memory
+                    // state but no checkpoints; without one, the launch path forces a
+                    // full re-process ("lack of cache data") on hybrid architectures.
+                    if (params_base.n_ctx_checkpoints > 0 && slot->prompt.tokens.size() > 0) {
+                        const auto n_restored = slot->prompt.tokens.size();
+
+                        auto & cur = slot->prompt.checkpoints.emplace_back();
+                        cur.id_task = -1;
+                        // pos_min = 0 lets the launch-path guard accept this checkpoint
+                        // for any continuation; pos_max covers the whole restored range.
+                        cur.update_pos(n_restored, 0, (llama_pos) (n_restored - 1));
+                        cur.update_tgt(ctx_tgt, slot->id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                        cur.update_dft(ctx_dft, slot->id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                        common_speculative_get_state(spec.get(), slot->id, cur.data_spec);
+
+                        SRV_INF("created context checkpoint for restored slot (pos_min = 0, pos_max = %d, n_tokens = %zu, size = %.3f MiB)\n",
+                                cur.pos_max, n_restored, (float) cur.size() / 1024 / 1024);
+                    }
+
                     const int64_t t_end = ggml_time_us();
                     const double t_restore_ms = (t_end - t_start) / 1000.0;
 
