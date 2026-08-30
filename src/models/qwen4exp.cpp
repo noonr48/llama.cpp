@@ -326,17 +326,17 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
     tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, 0);
 
     // there is no output_norm: the final hyper-connection mixer carries it
-    hc_head_norm = create_tensor(tn(LLM_TENSOR_HC_HEAD_NORM, "weight"), { hc_dim }, 0);
-    hc_head_down = create_tensor(tn(LLM_TENSOR_HC_HEAD_DOWN, "weight"), { hc_dim, hc_lr }, 0);
-    hc_head_up   = create_tensor(tn(LLM_TENSOR_HC_HEAD_UP,   "weight"), { hc_lr, hc_dim }, 0);
+    hc_head_norm = create_tensor(tn(LLM_TENSOR_HC_HEAD_NORM, "weight"), { hc_dim }, trunk_flags);
+    hc_head_down = create_tensor(tn(LLM_TENSOR_HC_HEAD_DOWN, "weight"), { hc_dim, hc_lr }, trunk_flags);
+    hc_head_up   = create_tensor(tn(LLM_TENSOR_HC_HEAD_UP,   "weight"), { hc_lr, hc_dim }, trunk_flags);
 
     output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), { n_embd, n_vocab }, TENSOR_NOT_REQUIRED);
     if (output == NULL) {
         output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, TENSOR_DUPLICATED);
     }
 
-    // flat [ple_head_dim, n_rows] gather target
-    if (hparams.ple_n_heads > 0) {
+    // flat [ple_head_dim, n_rows] gather target; draft-head-only files ship no PLE table
+    if (!mtp_only && hparams.ple_n_heads > 0) {
         // the head ranges are what the gather indexes, so they set the minimum row count
         int64_t ple_rows = 0;
         for (uint32_t h = 0; h < hparams.ple_n_heads; ++h) {
@@ -345,7 +345,8 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
 
         // the converter pads the table; a model synthesised from metadata has no tensor to ask
         const std::string ple_name = tn(LLM_TENSOR_PER_LAYER_TOKEN_EMBD, "weight").str();
-        if (const auto * ple_w = ml.get_weight(ple_name.c_str())) {
+        const auto * ple_w = ml.get_weight(ple_name.c_str());
+        if (ple_w) {
             if (ple_w->tensor->ne[1] < ple_rows) {
                 throw std::runtime_error(format("%s has %" PRId64 " rows, too few for the PLE head ranges (%" PRId64 ")",
                                                 ple_name.c_str(), ple_w->tensor->ne[1], ple_rows));
@@ -363,12 +364,15 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
             // open file description, whose readahead advice and O_DIRECT flag
             // (init_mappings applies POSIX_FADV_SEQUENTIAL, --load-mode dio)
             // would fight the small scattered row reads
-            const int fd = ::open(ml.files[ple_w.idx]->name().c_str(), O_RDONLY | O_CLOEXEC);
+            // direct reads need a reopenable backing file: absent for synthesised models
+            int fd = -1;
+            if (ple_w) {
+                fd = ::open(ml.files[ple_w->idx]->name().c_str(), O_RDONLY | O_CLOEXEC);
+            }
             if (fd < 0) {
                 // e.g. a FILE*-backed model has no reopenable path; the tensor is
                 // still lazy, so keep serving it through the mmap reads
-                LLAMA_LOG_WARN("%s: could not open %s for direct reads (%s), using lazy mmap reads\n",
-                        __func__, ml.files[ple_w.idx]->name().c_str(), strerror(errno));
+                LLAMA_LOG_WARN("%s: could not open the PLE table for direct reads, using lazy mmap reads\n", __func__);
             } else {
 #ifdef __linux__
                 // rows are tiny and scattered, so sequential readahead would be
@@ -380,12 +384,12 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
                 // well on NVMe and stays sane on smaller machines
                 const int n_threads = 2 * (int) std::max(1u, std::thread::hardware_concurrency());
 
-                ple_reader = std::make_unique<ple_direct_reader>(fd, ple_w.offs,
+                ple_reader = std::make_unique<ple_direct_reader>(fd, ple_w->offs,
                         ggml_row_size(per_layer_tok_embd->type, per_layer_tok_embd->ne[0]), ple_rows, n_threads,
                         per_layer_tok_embd->type, hparams.ple_head_dim);
 
                 LLAMA_LOG_INFO("%s: PLE direct read enabled: %" PRId64 " rows of %zu bytes at file offset %zu, %d threads\n",
-                        __func__, ple_rows, ple_reader->row_size, ple_w.offs, n_threads);
+                        __func__, ple_rows, ple_reader->row_size, ple_w->offs, n_threads);
             }
 #else
             LLAMA_LOG_WARN("%s: --lazy-mode on-direct is not supported on this platform, using lazy mmap reads\n", __func__);
@@ -395,6 +399,11 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
 
     for (int il = 0; il < (int) hparams.n_layer_all; ++il) {
         auto & layer = layers[il];
+
+        // draft-head-only files carry only the NextN block: skip the absent trunk layers
+        if (mtp_only && il < (int) n_layer_main) {
+            continue;
+        }
 
         const bool is_mtp_layer = il >= (int) n_layer_main;
         const int  flags        = is_mtp_layer ? mtp_flags : trunk_flags;
@@ -472,6 +481,13 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
             layer.nextn.eh_proj = create_tensor(tn(LLM_TENSOR_NEXTN_EH_PROJ, "weight", il), { 2 * n_embd, n_embd }, flags);
             layer.nextn.enorm   = create_tensor(tn(LLM_TENSOR_NEXTN_ENORM,   "weight", il), { n_embd }, flags);
             layer.nextn.hnorm   = create_tensor(tn(LLM_TENSOR_NEXTN_HNORM,   "weight", il), { hc_dim }, flags);
+
+            // optional head tensors for layouts that ship the head's own mixer
+            // (draft-head-only GGUFs): the graph falls back to shared_head_norm + the
+            // block's own ffn projections, or the trunk's embedding/LM head, when absent
+            layer.nextn.shared_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", il), { hc_dim }, flags | TENSOR_NOT_REQUIRED);
+            layer.nextn.embed_tokens     = create_tensor(tn(LLM_TENSOR_NEXTN_EMBED_TOKENS,     "weight", il), { n_embd, n_vocab }, flags | TENSOR_NOT_REQUIRED);
+            layer.nextn.shared_head_head = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", il), { n_embd, n_vocab }, flags | TENSOR_NOT_REQUIRED);
         }
     }
 }
@@ -1692,7 +1708,8 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
     ggml_set_input(inp_h->h);
     ggml_set_name(inp_h->h, "mtp_h_input");
 
-    ggml_tensor * tok_embd = ggml_get_rows(ctx0, model.tok_embd, inp_h->tokens);
+    ggml_tensor * tok_embd_w = layer.nextn.embed_tokens ? layer.nextn.embed_tokens : model.tok_embd;
+    ggml_tensor * tok_embd = ggml_get_rows(ctx0, tok_embd_w, inp_h->tokens);
     cb(tok_embd, "mtp_tok_embd", il);
 
     ggml_tensor * h_state = ggml_reshape_3d(ctx0, inp_h->h, n_embd, hc, n_tokens);
@@ -1750,9 +1767,15 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
     res->t_h_nextn = h_nextn;
     ggml_build_forward_expand(gf, h_nextn);
 
-    // the head mixer is the output norm; the sidecar carries its own copy of it
+    // the head mixer is the output norm; the sidecar carries its own copy of it.
+    // draft-head-only layouts ship no trunk mixer: fall back to the head's own
+    // shared_head_norm plus the block's ffn projections
+    ggml_tensor * head_norm = model.hc_head_norm ? model.hc_head_norm : layer.nextn.shared_head_norm;
+    ggml_tensor * head_down = model.hc_head_down ? model.hc_head_down : layer.hc_ffn_down;
+    ggml_tensor * head_up   = model.hc_head_up   ? model.hc_head_up   : layer.hc_ffn_up;
+    GGML_ASSERT(head_norm && head_down && head_up && "MTP block missing head mixer tensors");
     cur = build_hc_mix(res_hc,
-            model.hc_head_norm, model.hc_head_down, model.hc_head_up,
+            head_norm, head_down, head_up,
             nullptr, nullptr, -1);
     if (inp_out_ids) {
         cur = ggml_get_rows(ctx0, cur, inp_out_ids);
@@ -1760,7 +1783,10 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
     cb(cur, "result_norm", -1);
     res->t_embd = cur;
 
-    cur = build_lora_mm(model.output, cur, model.output_s);
+    ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;
+    ggml_tensor * head_s = layer.nextn.shared_head_head ? layer.nextn.shared_head_head_s : model.output_s;
+    GGML_ASSERT(head_w && "MTP block missing LM head (nextn.shared_head_head or model.output)");
+    cur = build_lora_mm(head_w, cur, head_s);
     cb(cur, "result_output", -1);
     res->t_logits = cur;
 
