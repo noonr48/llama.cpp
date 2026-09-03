@@ -2472,6 +2472,13 @@ common_params common_base_params_to_speculative(const common_params & params) {
         result.n_gpu_layers          = params_spec.n_gpu_layers;
         result.tensor_buft_overrides = params_spec.tensor_buft_overrides;
 
+        // A draft with explicit devices must NOT inherit SPLIT_MODE_TENSOR: the draft model
+        // would wrap its devices in a Meta composite, but -devd/-otd resolve against the
+        // global registry (raw CUDA buffers), leaving draft weights in buffers no scheduler
+        // backend owns (abort: 'pre-allocated tensor ... cannot run the operation'). Layer
+        // split is the proven draft path; without explicit devices the draft stays CPU-side.
+        result.split_mode            = LLAMA_SPLIT_MODE_LAYER;
+
         if (params_spec.cpuparams.n_threads > 0) {
             result.cpuparams.n_threads       = params_spec.cpuparams.n_threads;
             result.cpuparams_batch.n_threads = params_spec.cpuparams_batch.n_threads;
