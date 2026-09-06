@@ -543,3 +543,25 @@ driving placement decisions that the false-regime compute then violates.
 ARC-2 ENTRY (sharpest): trace ONE full-attn layer's boundary tensor (the
 attention-output add result) through :876's true-regime — if it is PARTIAL-as-
 MIRRORED there but PARTIAL at :1461, the boundary consumes unsynchronized values.
+
+## ARC-2 LEAD SHARPENED 2026-09-07 04:45 — the s_cache is the unpaired twin
+
+handle_gated_delta_net (meta:828) requires all GDN srcs head-split consistently
+and returns axis-0; its comment even notes the state's head dim is axis 2. My
+site-3 fix (762f2c64a) paired r_cache (the CONV state) to attn_qkv's distribution
+— but s_cache (the RECURRENT state, [S_v, S_v, H_v=48, n_seqs]) still derives its
+per-backend head distribution INDEPENDENTLY (segments {{n_k_heads*head_v_dim^2,
+head_ratio}}, granularity qkv*head_dim — llama-model.cpp:630-634/:686-688). Same
+bug class as site 3: independent rounding lands extra heads on different backends
+→ each backend updates WRONG state slices → corrupted recurrence across 36/48
+layers → fluent-but-ungrounded generation. This fits ALL observations (short
+smoke coherent: shallow recurrence error accumulates slowly; needle recall
+destroyed at any depth; layer control clean).
+
+ARC-2 FIX (the pattern is proven): extend the 762f2c64a pairing to s_cache —
+derive its per-backend distribution from the GDN value-head split (the qkv path's
+value segment; H_v=48 heads must map to the SAME backend sets as the activations
+handle_gated_delta_net consumes). Layout work: s_cache axis structure [S_v,S_v,
+H_v,n_seqs] vs the config's SPLIT_AXIS_0 — derive the exact head-axis mapping
+first, then mirror the pairing block from the r_cache fix. Gate: needle ladder
+5k (must terminate with the RIGHT code) then 27k.
