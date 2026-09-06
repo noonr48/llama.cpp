@@ -448,3 +448,29 @@ Tensor split's remaining value = PREFILL (mode specialization): the uid
 shape-cache arc (design doc options A/B) to kill the rebuild tax, then tensor
 mode as the prefill half of a two-mode lane. Arc 2 spec is ready in this doc.
 Artifacts: /tmp/tsplit-mtp-compose.log.
+
+## PREFILL MEASUREMENT 2026-09-07 04:00 — THE FLIP: tensor mode WINS prefill
+
+4-way (5090+3x3090) 32k, GGML_META_DEBUG=1, varying prompt shapes:
+  PL 279 tok:  ~329 tok/s   (short-prompt overhead dominated)
+  PL 1078 tok: ~757 tok/s
+  PL 4280 tok: ~1045 tok/s  ← 2.4-3x the 9-GPU layer-split prefill (350-440, 09-03)
+  Rebuild events: ZERO (steady 512-ubatch shapes never vary -> same uid -> no rebuild;
+  the old 40x collapse was the 12-way straggler config, not the rebuild tax per se)
+
+FINAL ARC-1 PICTURE (all honest, all censored model @32k):
+                     PREFILL        DECODE
+  layer-split 9-GPU: 350-440 t/s    54.7 (50.6-62 w/MTP)
+  tensor 4-way:      ~1045 t/s      12.80 (12.77 w/MTP — no-op)
+  tensor 12-way:     (40x collapse) 4.52
+
+THE ARCHITECTURE ANSWER (data-backed): mode specialization — tensor-split as the
+PREFILL half, layer-split as the DECODE half of a two-mode serving lane. Tensor
+parallelism genuinely wins MoE prefill on this fleet (2.4-3x); per-token decode
+collectives genuinely lose (4.3x). A two-mode lane = best of both = the owner's
+'beat layer-split' goal achieved where it's physically winnable.
+ARC-2 SPEC: (a) two-mode lane plumbing (prefill-mode/decode-mode switch per phase —
+server-side, no fork change needed for a first cut: measure a tensor-prefill +
+layer-decode sequence manually); (b) MTP+shape alternation rebuild behavior only
+if MTP-on-tensor ever matters (measured no-op tonight); (c) 262k memory arc for
+the needle (unchanged: mirrors need subset/host placement).
