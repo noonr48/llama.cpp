@@ -384,3 +384,25 @@ NEXT-ARC OPTIONS (from the consult + measurement):
 (3) Accept tensor-split as the PREFILL/MTP lane (uid-cache target) and keep
     layer-split for decode — the two modes have complementary strengths.
 Measurement artifacts: /tmp/tsplit-decode-measure.log. Branch: d2e4e63b8.
+
+## 4-WAY EXPERIMENT 2026-09-07 03:35 — new grouping finding (next-session lead)
+
+4 fast devices (5090 + 3x3090, -ts 1.6,1,1,1, 32k): meta alloc FAILED at
+backend **0/2** — only TWO simple backends materialized from the 4-GPU set
+(12-way runs showed 12 backends), and CUDA0 got the 1222-tensor weights ctx
+UNPLIT at 46.3 GiB (site-1 pattern, different byte count than the 66 GiB
+12-way case). NEXT-SESSION LEAD: find why n_simple_bufts=2 for this device set
+(meta device grouping logic — grep ggml_backend_meta_device / n_devs in
+llama.cpp:170-173 and the simple_bufts construction in the meta buft) — the
+grouping may relate to compute-capability tiers or the -ts parsing path; fix
+or work around, then rerun the 4-way straggler test. Log: /tmp/tsplit-4way.log.
+
+## SESSION SUMMARY 2026-09-06/07 (the night of two goals)
+1. g_421bd544 COMPLETE: raw-source uncensored IQ4_NL quant DEPLOYED on :8331
+   (balanced-eval zero losses, PPL +/-1% of raw Q8, needle 247k PASS, vision
+   PASS, MTP live at 0.63-0.76 acceptance, drop-in root cause fixed, 1.26TB
+   storage freed).
+2. g_c6fe4804 arc 1: tensor split SERVES (sites 3/4/6 fixed with three novel
+   fixes, one from a GPT Pro consult), decode honestly measured (4.52 t/s 12-way
+   — straggler-bound), 28 commits pushed, next-arc options documented.
+Lane :8331 stable and serving. Good night.
