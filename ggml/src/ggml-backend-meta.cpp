@@ -1096,6 +1096,18 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
                         for (size_t s = 0; s < src_ss[i].n_segments; s++) {
                             sum += src_ss[i].ne[s*n_bufs + j] * src_ss[i].nr[s];
                         }
+                        if (split_state.ne[j]*split_state.nr[0] * tensor->src[i]->ne[src_ss[i].axis] != sum * tensor->ne[split_state.axis]) {
+                            // [tsplit-dev] ratio-inconsistency diagnostic
+                            fprintf(stderr, "meta ratio assert: op=%s name=%s axis=%d src%zu=%s src_axis=%d"
+                                    " lhs=%lld*%lld*%lld rhs=%lld*%lld backend j=%zu/%zu\n",
+                                    ggml_op_name(tensor->op), tensor->name, (int)split_state.axis,
+                                    i, tensor->src[i]->name, (int)src_ss[i].axis,
+                                    (long long)split_state.ne[j], (long long)split_state.nr[0],
+                                    (long long)tensor->src[i]->ne[src_ss[i].axis],
+                                    (long long)sum, (long long)tensor->ne[split_state.axis],
+                                    j, n_bufs);
+                            fflush(stderr);
+                        }
                         GGML_ASSERT(split_state.ne[j]*split_state.nr[0] * tensor->src[i]->ne[src_ss[i].axis]
                                                                  == sum * tensor->ne[split_state.axis]);
                     }

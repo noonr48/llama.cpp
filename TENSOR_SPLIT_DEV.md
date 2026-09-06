@@ -149,10 +149,18 @@ C. **Profile-first** (cheapest, do this before A/B):
           split_state.ne[j]*split_state.nr[0] * tensor->src[i]->ne[src_ss[i].axis]
           == sum * tensor->ne[split_state.axis]) — split-state SHAPE CONSISTENCY
           check (~the snapshot/validation region). NEXT DEBUG TARGET.
-- [ ] Fix meta:1099 split-state shape assert (read the validation fn + which tensor
-      triggers; likely indexer-cache/projection interplay at reduced ctx)
-- [ ] Memory-placement fix for mirrored caches at 262k (host-pinned or subset
-      placement; the indexer is tiny compute — PCIe reads may be acceptable)
+- [x] CRASH SITE 3 IDENTIFIED 2026-09-07 01:48 — the meta:1111 ratio assert fires on:
+      `op=CONCAT name=node_37 axis=1 src1=linear_attn_qkv_mixed-0 (transposed) src_axis=1
+      lhs=256*5*10240 rhs=640*10240 backend j=5/12` — factor-of-2 ratio mismatch.
+      The LINEAR-ATTENTION (GDN/QSA) qkv_mixed tensor's split segments (from
+      get_split_segments' QWEN4EXP branch: ssm_d_state/n_group-based key_dim/value_dim
+      segmentation) are inconsistent with what the CONCAT consumer expects on some
+      backends. THE CONCRETE NEXT FIX: align the qwen4exp qkv segmentation with the
+      concat's ratio requirements in llama-model.cpp get_split_segments (256 vs 640
+      = 2*320: likely key_dim vs 2*key_dim+value_dim style arithmetic on the
+      transposed view).
+- [ ] Fix the qwen4exp linear-attn qkv split segments (crash site 3)
+- [ ] Memory-placement fix for mirrored caches at 262k (crash site 2)
 - [ ] 12-GPU instrumented run for rebuild-phase timings once load completes
 - [ ] 9-GPU placement planner fix (single-range alloc on device 0)
 - [ ] Implement chosen fix (A/B per profile)
