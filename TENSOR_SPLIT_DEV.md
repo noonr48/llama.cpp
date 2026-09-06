@@ -271,3 +271,22 @@ C. **Profile-first** (cheapest, do this before A/B):
 - [ ] 9-GPU placement planner fix (single-range alloc on device 0)
 - [ ] Implement chosen fix (A/B per profile)
 - [ ] Bench protocol pass, commit on branch, PR-quality summary
+
+## FINAL MAP PIECE 2026-09-07 02:30 — the complete call chain for the fix
+
+- meta:838 `dev_ctx->get_split_state(tensor, ud)` — THE callback invocation (inside
+  the OP_NONE path, case at meta:868): weights/caches get their split state from the
+  MODEL-SIDE callback, which is the llama-model.cpp function containing
+  get_tensor_config (:440-475) + get_split_segments (:594-640) + the granularity fn
+  (:655-686) — the per-backend ne[] distribution is computed THERE (segments +
+  granularity + rotation = il%n_devices).
+- THEREFORE THE FIX LIVES IN llama-model.cpp's callback (not in meta handlers):
+  for r_cache tensors, after computing its own distribution, override per-backend
+  ne[j] := (d_conv-1) * qkv_mixed's per-backend ne[j] (query the paired tensor's
+  distribution — the pairing mechanism via prefix+suffix tensor_axis_0 lookup is
+  already in get_tensor_config_impl). One function, ~15 lines.
+- Verification path: rebuild → 64k window (lane down/up) → expect load to pass the
+  concat assert → then the rebuild-tax measurement (the actual Option C goal) →
+  then crash site 2 (mirror memory) → then the full bench protocol.
+
+Session 2026-09-06/07 status: 16 commits, tip 0cc00671d, all diagnostics in build.
