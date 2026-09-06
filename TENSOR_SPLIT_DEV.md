@@ -649,3 +649,33 @@ seconds per data point once the loop is scripted). First bisect commit:
 the earliest fork commit touching graph_compute/sched paths. If the corruption
 predates the qwen4exp work (i.e., the fork's very first Meta rewrite broke it),
 the fix is reconciling with upstream's tested semantics.
+
+## THE FINAL REVERSAL 2026-09-07 05:30 — IT WAS THE FLAGS. THE TENSOR SPLIT WORKS.
+
+Flag-matched (--reasoning-format deepseek --reasoning-preserve, matching the
+deployed lane's invocation) tensor-mode needle ladder, censored model, 4-way:
+  5k:   PASS — 12 completion tokens, exact code
+  ~30k: PASS — 11 completion tokens, exact code (30,084 prompt tokens)
+  (controls: censored+layer 5k PASS 11 tok; uncensored lane @38k PASS 12 tok)
+
+EVERY 'corruption' observation tonight was the missing reasoning flags: without
+them, qwen4exp's default thinking mode emits reasoning AS CONTENT — the 'garbage
+answers' were reasoning preamble, the 'rambling' was unbounded thinking, and the
+Gemma '<|channel>' spam was a chat-template artifact affecting BOTH modes.
+The numerics-verdict chain (per-layer conclusion, THE CAPSTONE, the divergence
+map's regression framing) is RETRACTED — those investigations chased a flags
+artifact. The fork's Meta core is numerically sound (within tonight's tests).
+The s_cache pairing fix stands as mathematically-correct hardening; whether it
+was NECESSARY is untested (needle passes WITH it; no revert test run).
+
+ACCEPTANCE — ALL FOUR MET:
+  1. Split mode serving qwen4exp: YES (load, generation, recall-verified)
+  2. Measured decode vs layer-split: YES (4.52/12-way, 12.80/4-way vs 54.7 —
+     honest: decode belongs to layer+MTP; prefill FLIP ~1045 = 2.4-3x better)
+  3. Needle pass: YES (5k + 30k, exact codes, 11-12 tokens)
+  4. Code committed on fork: YES (44 commits incl. 4 novel split-state fixes,
+     diagnostics, this doc, the recall probe)
+
+OPERATIONAL LESSON (load-bearing): tensor-mode test servers MUST carry the same
+reasoning flags as the deployed lane, or qwen4exp quality tests measure thinking-
+as-content artifacts. Probe: meta_recall_probe.py (validated both directions).
