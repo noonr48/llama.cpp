@@ -90,7 +90,22 @@ C. **Profile-first** (cheapest, do this before A/B):
 - [x] Upstream scan (nothing grabbable; 3 negative signals; PRs #28100/#28185/#27750)
 - [x] Fork recon (this doc's evidence map)
 - [x] Branch + worktree + this doc
-- [ ] build-tsplit configured + compiles
-- [ ] Option C profile instrumentation + one GPU-window measurement
+- [x] build-tsplit configured + compiles (BUILD_RC=0; note: quote `-DCMAKE_CUDA_ARCHITECTURES='86;120'` — the semicolon splits unquoted bash)
+- [x] Option C instrumentation in place (phase timers around reset/nodes/delay, GGML_LOG_INFO "meta rebuild: ...") — UNTESTED (blocked by the load crash below)
+- [x] First GPU window (2026-09-07 00:45): **tensor mode CRASHES AT LOAD** with the new
+      uncensored quant: `GGML_ASSERT(meta_buf_ctx->bufs[i]) failed` at
+      `ggml-backend-meta.cpp:1761` in `ggml_backend_meta_alloc_ctx_tensors_from_buft`
+      ← `llama_model::load_tensors` (full stack in profile_window.log). Hypotheses:
+      (a) PLE lazy-host tensors (>4GiB per_layer_token_embd, host mmap) confusing the
+      meta buffer-context allocation; (b) the 24 BF16 indexer projections; (c) eval
+      branch was only ever exercised with the CENSORED baseline (iq4nl_pleq8), never
+      with this tensor mix. NOTE: the layer-mode comparison run was poisoned (started
+      1s after the core dump, failed model load) — rerun cleanly next window.
+      llama-bench gotchas learned: no `-c` flag (ctx derives from -p/-n); `-ctk f32`
+      rejected (value validation) — defaults f16 are fine for rebuild profiling.
+- [ ] Fix the meta:1761 load crash (read alloc_ctx_tensors_from_buft + how PLE
+      lazy-host buffers are created; compare tensor sets censored-baseline vs
+      uncensored-raw-quant)
+- [ ] One clean GPU window: instrumented rebuild profile + layer baseline
 - [ ] Implement chosen fix (A/B per profile)
 - [ ] Bench protocol pass, commit on branch, PR-quality summary
