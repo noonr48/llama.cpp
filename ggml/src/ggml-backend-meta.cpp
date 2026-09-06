@@ -1192,7 +1192,9 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
     }
 #endif // NDEBUG
     // [tsplit-dev] split-state propagation trace for the GDN conv path (crash site 3)
-    if (tensor->name[0] != '\0' && (strstr(tensor->name, "linear_attn") || strstr(tensor->name, "cache_r") ||
+    // [review repair] gated behind GGML_META_DEBUG (was unconditional — ~94k lines/session)
+    static const bool meta_debug_trace = []{ const char * e = getenv("GGML_META_DEBUG"); return e != nullptr && atoi(e) != 0; }();
+    if (meta_debug_trace && tensor->name[0] != '\0' && (strstr(tensor->name, "linear_attn") || strstr(tensor->name, "cache_r") ||
                                     strstr(tensor->name, "conv") || strstr(tensor->name, "node_37"))) {
         fprintf(stderr, "ss trace: op=%-14s name=%-42s axis=%d nseg=%d nr0=%lld ne=[", 
                 ggml_op_name(tensor->op), tensor->name, (int)ret.axis, (int)ret.n_segments,
@@ -2289,12 +2291,15 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
         t_rb_t3 = std::chrono::steady_clock::now(); // [tsplit-dev] Phase C end: MoE delay scan
 
         {
-            const double ms_reset = std::chrono::duration<double, std::milli>(t_rb_t1 - t_rb_t0).count();
-            const double ms_nodes = std::chrono::duration<double, std::milli>(t_rb_t2 - t_rb_t1).count();
-            const double ms_delay = std::chrono::duration<double, std::milli>(t_rb_t3 - t_rb_t2).count();
-            const double ms_total = std::chrono::duration<double, std::milli>(t_rb_t3 - t_rb_t0).count();
-            GGML_LOG_INFO("meta rebuild: total=%.2fms (reset=%.2f nodes=%.2f delay=%.2f) n_nodes=%d n_backends=%zu\n",
-                          ms_total, ms_reset, ms_nodes, ms_delay, cgraph->n_nodes, n_backends);
+            static const bool meta_debug_rebuild = []{ const char * e = getenv("GGML_META_DEBUG"); return e != nullptr && atoi(e) != 0; }();
+            if (meta_debug_rebuild) {
+                const double ms_reset = std::chrono::duration<double, std::milli>(t_rb_t1 - t_rb_t0).count();
+                const double ms_nodes = std::chrono::duration<double, std::milli>(t_rb_t2 - t_rb_t1).count();
+                const double ms_delay = std::chrono::duration<double, std::milli>(t_rb_t3 - t_rb_t2).count();
+                const double ms_total = std::chrono::duration<double, std::milli>(t_rb_t3 - t_rb_t0).count();
+                GGML_LOG_INFO("meta rebuild: total=%.2fms (reset=%.2f nodes=%.2f delay=%.2f) n_nodes=%d n_backends=%zu\n",
+                              ms_total, ms_reset, ms_nodes, ms_delay, cgraph->n_nodes, n_backends);
+            }
         }
 
         backend_ctx->uid         = cgraph->uid;
