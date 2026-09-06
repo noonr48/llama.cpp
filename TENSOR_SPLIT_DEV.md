@@ -497,3 +497,32 @@ ACCEPTANCE STATE (honest): serving ✓ / decode measured ✓ / needle ✗ (contr
 negative, defines the numerics arc) / committed ✓. The goal's 'beat layer-split
 decode' remains out of reach by measurement; 'needle pass' now FAILS — arc 2 =
 numerics debugging BEFORE any architecture work.
+
+## THE NUMERICS VERDICT 2026-09-07 04:35 — fluent but ungrounded at ANY depth
+
+Shallow needle (5,732 tok): TERMINATED cleanly at 35 tokens but the answer was
+unrelated garbage ('An A (or S) is a single unit of measurement within a single
+row of a matrix...'). Combined with the deep-needle rambling and the coherent
+short smoke tests: the tensor split produces FLUENT BUT UNGROUNDED generation —
+the classic signature of corrupted attention (language modeling intact,
+grounding/recall destroyed). NOT depth-dependent.
+
+PRIME SUSPECT (read tonight, meta handle_mul_mat ~595): when src0 axis-0 AND
+src1 (weight) axis-0, the handler returns
+`{assume_sync ? MIRRORED : PARTIAL}` — with assume_sync=TRUE on the init path
+(meta:1197 get_split_state(stc, tensor, true)), the PARTIAL sum is DECLARED
+mirrored with NO actual allreduce inserted. Per-backend partial outputs get
+treated as complete values downstream. Fluent garbage is exactly the symptom.
+Secondary suspect: the GDN recurrent-state split (36/48 layers) — s_cache /
+recurrent scan semantics across backends.
+
+ARC-2 (numerics, THE blocking arc): (1) verify the suspect — instrument the
+PARTIAL/assume_sync branch, count how many ops take it per forward pass; (2) the
+fix — either insert real reductions (the MoE delayed-AllReduce machinery at
+meta:2021-2100 is the in-tree precedent for exactly this class) or correct the
+split-state so partials never masquerade as mirrored; (3) re-run the needle
+ladder (5k -> 27k) as the acceptance gate; (4) only then revisit performance.
+
+ACCEPTANCE (final for arc 1): serving ✓ / decode ✓ / needle ✗✗ (definitive,
+controlled) / committed ✓ (35 commits, tip b18ec788a). Arc 1 stands as the
+correctness-infrastructure arc: the load path works; the compute path does not.
