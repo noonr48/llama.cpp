@@ -608,3 +608,26 @@ correct-but-insufficient), needle definitively negative with clean controls,
 honest performance map (decode 4.52/12.80/12.77; prefill FLIP ~1045; MTP no-op),
 review closed, memory committed. The load path works; the compute path has a
 per-layer numerics bug with two named suspects and a ready debug ladder.
+
+## THE CAPSTONE 2026-09-07 05:15 — the Meta core itself was ALWAYS broken
+
+Gemma4-12B (plain arch, no GDN/PLE/indexer, upstream-allowlisted) on this fork's
+tensor split, 2-way 5090+3090: recall probe FAILS with degenerate <|channel> token
+spam (chat endpoint: empty; completions: channel-loop garbage). The corruption is
+in the META COMPOSITE CORE on this branch — NOT the qwen4exp integration.
+
+REFRAME: the 22bb4b9a prototype bench ('loads healthy, decode 44.2 t/s') measured
+throughput only — the output quality was NEVER validated. The eval branch's tensor
+mode has been numerically broken from day one; 44.2 t/s was fast garbage. This
+session's needle ladder is what DISCOVERED the pre-existing bug.
+
+What stands from tonight: the LOAD-path fixes are real (three verified + one
+correct-but-insufficient — the crashes were genuine integration bugs, now fixed);
+the honest performance map stands; the numerics bug is now correctly attributed.
+ARC-2B TARGET (the real one): the Meta composite COMPUTE path — the per-backend
+subgraph execution and reduction machinery in ggml-backend-meta.cpp (graph_compute,
+the partial/PARTIAL handling at runtime, the subgraph construction ~1361-1590).
+Debug entry: a single-layer/minimal-graph correctness test (one matmul split
+2-way, compare against CPU) — bisect the compute path op by op. Also worth:
+diff the Meta implementation against upstream PR #19378's original — the fork may
+carry a local regression.
