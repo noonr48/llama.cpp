@@ -526,3 +526,20 @@ ladder (5k -> 27k) as the acceptance gate; (4) only then revisit performance.
 ACCEPTANCE (final for arc 1): serving ✓ / decode ✓ / needle ✗✗ (definitive,
 controlled) / committed ✓ (35 commits, tip b18ec788a). Arc 1 stands as the
 correctness-infrastructure arc: the load path works; the compute path does not.
+
+## SUSPECT VERIFICATION 2026-09-07 04:40 — assume_sync is TWO-REGIME; suspect refined
+
+Call-site map: state COMPUTATION (init :1228/:1280/:1330 AND the graph-time src
+recursion :876) passes assume_sync=TRUE; the actual COMPUTE paths (:1361/:1461/:1589)
+pass FALSE. So at execution time PARTIAL branches keep PARTIAL semantics and the
+MoE delayed-AllReduce machinery inserts real reductions — the simple 'no-allreduce
+at all' story is WRONG. Refined suspects for the fluent-but-ungrounded garbage:
+(1) the layer-boundary activation: if a layer output is PARTIAL and the next
+layer's K/V (mirrored weights) consume it as if complete, every full-attn layer
+corrupts grounding while preserving fluency — CHECK: what split state does the
+residual/layer-output carry at the boundary? (2) the GDN recurrent scan across
+backends (36/48 layers — s_cache semantics); (3) the true-regime states at :876
+driving placement decisions that the false-regime compute then violates.
+ARC-2 ENTRY (sharpest): trace ONE full-attn layer's boundary tensor (the
+attention-output add result) through :876's true-regime — if it is PARTIAL-as-
+MIRRORED there but PARTIAL at :1461, the boundary consumes unsynchronized values.
