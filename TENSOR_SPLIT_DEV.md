@@ -248,6 +248,24 @@ C. **Profile-first** (cheapest, do this before A/B):
       exact handler that breaks the channel-alignment → fix (likely: normalize
       nr/n_segments in handle_reshape for multi-segment axis-0→axis-1 remaps, or
       config-side {{key_dim, 5} per window}) → rebuild → 64k window → needle/t/s.
+- [x] SMOKING GUN TRACE 2026-09-07 02:10 (64k window, split-state logger in
+      get_split_state tail — matches linear_attn/cache_r/conv/node_37 names):
+      qkv_mixed per-backend [640,640,640,1280,640,640,1280,640,1280,640,640,1280]
+      (extras {3,6,8,11}; 8×640+4×1280=10240 ✓)
+      cache_r_l0 per-backend [1920,1920,1920,3840,1920,3840,1920,1920,3840,1920,1920,3840]
+      (extras {3,5,8,11}; 8×1920+4×3840=30720 ✓)
+      conv_state_at (graph tensor) follows CACHE's extras {3,5,8,11} NOT qkv's
+      {3,6,8,11}: backend5 state=1280 vs qkv=640; backend6 state=640 vs qkv=1280
+      → CONCAT ratio assert (lhs 256×5=1280 vs rhs 640).
+      ROOT CAUSE: even-weight+granularity range assignment distributes extra chunks
+      to DIFFERENT backends per tensor (granularity 384 vs 128 → different boundary
+      rounding in 30720- vs 10240-wide tensors).
+      COMPLETE FIX SPEC: cache_r per-backend range must equal (d_conv-1) × the
+      qkv_mixed per-backend CHANNEL range. Implement via the tensor_config pairing
+      mechanism (get_tensor_config_impl's suffix/tensor_axis_0 lookup — pair r_cache
+      ranges to the qkv segmentation) instead of independent even-weight assignment.
+      Handlers are NOT buggy — the FIXME nr/n_segments warning is a red herring for
+      this site; the assignment divergence is the bug.
 - [ ] Memory-placement fix for mirrored caches at 262k (crash site 2)
 - [ ] 12-GPU instrumented run for rebuild-phase timings once load completes
 - [ ] 9-GPU placement planner fix (single-range alloc on device 0)

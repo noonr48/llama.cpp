@@ -1177,6 +1177,20 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
         assert(ne_ret == tensor->ne[int(ret.axis)]);
     }
 #endif // NDEBUG
+    // [tsplit-dev] split-state propagation trace for the GDN conv path (crash site 3)
+    if (tensor->name[0] != '\0' && (strstr(tensor->name, "linear_attn") || strstr(tensor->name, "cache_r") ||
+                                    strstr(tensor->name, "conv") || strstr(tensor->name, "node_37"))) {
+        fprintf(stderr, "ss trace: op=%-14s name=%-42s axis=%d nseg=%d nr0=%lld ne=[", 
+                ggml_op_name(tensor->op), tensor->name, (int)ret.axis, (int)ret.n_segments,
+                (long long)ret.nr[0]);
+        for (size_t j = 0; j < n_bufs && j < 12; j++) {
+            int64_t tot = 0;
+            for (size_t s = 0; s < ret.n_segments; s++) tot += ret.ne[s*n_bufs + j] * ret.nr[s];
+            fprintf(stderr, "%s%lld", j ? "," : "", (long long)tot);
+        }
+        fprintf(stderr, "] tensor_ne%d=%lld\n", (int)ret.axis, (long long)tensor->ne[ret.axis < GGML_MAX_DIMS ? ret.axis : 0]);
+        fflush(stderr);
+    }
     return ret;
 }
 
