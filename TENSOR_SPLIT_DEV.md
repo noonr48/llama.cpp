@@ -343,3 +343,21 @@ scale with ts). Options for the next arc: (1) KV subset placement (2 heads → 2
 backends, per-head Q routing — the principled fix); (2) host-pinned mirrors;
 (3) 32k ctx halves mirrors (3.2+1.2 GiB — fits) for the instrumented measurement
 phase, deferring the 262k-capable placement fix.
+
+## CRASH SITE 6 (32k asym, 2026-09-07 02:50) — fused-qkv mixed-head frontier
+
+`meta set_rows assert: name=cache_k_l3 (view) src0=Kcur-3 (view) axis=0 [0,0,0,256,...]
+src2=cache_k_l3 axis=MIRRORED [0,0,...]` — the site-4 KV mirror made the CACHE
+mirrored, but Kcur (the K projection output) still arrives head-split (256/head on
+Q-ish backends). SET_ROWS demands src0==src2 → mismatch.
+
+ROOT: the full-attn fused qkv weight mixes 24 Q heads (splittable) + 2 KV heads
+(must mirror per site-4) in ONE tensor; split_state has ONE axis for ALL segments,
+so per-segment mirrored-vs-split is NOT expressible today. THE FRONTIER FIX:
+(a) per-segment axis support in split_state (deep), or (b) mirror the K/V head
+SEGMENTS' rows to all backends while Q segments split (needs set_rows scatter
+support), or (c) exclude full-attn layers from tensor split (hybrid: those layers
+run layer-split within the tensor-mode lane — the get_layer_buft_list hook).
+Option (c) is the pragmatic next arc: qwen4exp is 3/4 GDN layers — tensor-split
+the GDN layers (all sites 1-5 now fixed for them), layer-split the 12 full-attn
+layers. This mirrors how the model actually computes.

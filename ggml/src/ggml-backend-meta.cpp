@@ -754,6 +754,20 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
     auto handle_set_rows = [&](const std::vector<ggml_backend_meta_split_state> & src_ss) -> ggml_backend_meta_split_state {
         GGML_ASSERT(src_ss[0].axis != GGML_BACKEND_SPLIT_AXIS_1);
         GGML_ASSERT(src_ss[1].axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED);
+        if (!split_states_equal(src_ss[0], src_ss[2])) {
+            // [tsplit-dev] crash-site-6 diagnostic: update-values vs destination-cache divergence
+            fprintf(stderr, "meta set_rows assert: name=%s src0=%s axis=%d nseg=%d nr0=%lld src2=%s axis=%d nseg=%d nr0=%lld\n",
+                    tensor->name,
+                    tensor->src[0] ? tensor->src[0]->name : "?", (int)src_ss[0].axis, (int)src_ss[0].n_segments, (long long)src_ss[0].nr[0],
+                    tensor->src[2] ? tensor->src[2]->name : "?", (int)src_ss[2].axis, (int)src_ss[2].n_segments, (long long)src_ss[2].nr[0]);
+            for (size_t j = 0; j < n_bufs && j < 12; j++) {
+                int64_t t0 = 0, t2 = 0;
+                for (size_t s = 0; s < src_ss[0].n_segments; s++) t0 += src_ss[0].ne[s*n_bufs + j] * src_ss[0].nr[s];
+                for (size_t s = 0; s < src_ss[2].n_segments; s++) t2 += src_ss[2].ne[s*n_bufs + j] * src_ss[2].nr[s];
+                fprintf(stderr, "  backend %zu: src0=%lld src2=%lld\n", j, (long long)t0, (long long)t2);
+            }
+            fflush(stderr);
+        }
         GGML_ASSERT(split_states_equal(src_ss[0], src_ss[2]));
         return src_ss[0];
     };
