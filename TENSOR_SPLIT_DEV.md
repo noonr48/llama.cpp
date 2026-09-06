@@ -220,6 +220,19 @@ C. **Profile-first** (cheapest, do this before A/B):
       the reshape order in build_conv_state_at :1487-1520 to pick between (a)
       step-major segments {{key_dim, (2+head_ratio)*(d_conv-1)}} + granularity_qkv,
       or (b) channel-major with qkv-aligned per-backend boundaries.
+- [x] CONCAT STRUCTURE CONFIRMED 2026-09-07 02:25 (qwen4exp.cpp:1487-1515, exact):
+      `state = ggml_reshape_3d(ctx0, rows, state_cols /*=d_conv-1*/, channels, n_seqs)`
+      → `conv_input = ggml_concat(ctx0, state, ggml_transpose(ctx0, x), 0)` — the
+      concat is AXIS 0 (time), src0 = state [state_cols, channels=10240] whose rows
+      come from conv_states_all via get_rows (build_rs, row_total = ne[0]); src1 =
+      transposed qkv_mixed. BOTH split on axis 1 (channels) — the fix is purely:
+      state's per-backend channel boundaries must equal qkv_mixed's. REMAINING
+      AMBIGUITY: conv_states_all's exact axis-0 layout (channels×seqs vs time-major)
+      determines whether segments {{key_dim*(d_conv-1), 5}} must become
+      {{key_dim, 5} per time step} (i.e. {{key_dim, (2+head_ratio)*(d_conv-1)}}) or
+      granularity alone fixes the boundaries. Read split_state struct def (meta:~430-520,
+      ne/nr semantics) + conv_states_all allocation (grep build_conv_state_at caller /
+      cache init in llama-context.cpp) — then implement, rebuild, 64k window.
 - [ ] Memory-placement fix for mirrored caches at 262k (crash site 2)
 - [ ] 12-GPU instrumented run for rebuild-phase timings once load completes
 - [ ] 9-GPU placement planner fix (single-range alloc on device 0)
