@@ -103,15 +103,19 @@ C. **Profile-first** (cheapest, do this before A/B):
       1s after the core dump, failed model load) — rerun cleanly next window.
       llama-bench gotchas learned: no `-c` flag (ctx derives from -p/-n); `-ctk f32`
       rejected (value validation) — defaults f16 are fine for rebuild profiling.
-- [ ] Fix the meta:1761 load crash. SHARPENED 2026-09-07 01:00: the function already
-      handles the zero-sized-tensor NULL return (any_nonzero_slice -> dummy buffer),
-      so the assert firing means ggml_backend_alloc_ctx_tensors_from_buft returned NULL
-      WITH nonzero slices = ALLOCATION FAILURE on a simple backend. Prime suspect:
-      per_layer_token_embd (51 GiB, Q8_0) forced into the meta split path instead of
-      the fork's >4GiB lazy-host rule; every GPU slice OOMs. Next step: trace where the
-      loader assigns per_layer_token_embd's buft in SPLIT_MODE_TENSOR (compare with
-      layer mode's lazy-host override) — check llama-model.cpp get_layer_buft_list /
-      override-tensor handling for the meta composite buft.
+- [ ] Fix the meta:1761 load crash. ROOT-CAUSE MAP 2026-09-07 01:05: the lazy-host
+      mmap branch in llama-model.cpp:1725 is gated on `is_default_buft`
+      (buft == device default buft). In SPLIT_MODE_TENSOR the tensors' buft is the
+      META COMPOSITE buft → gate is false → the lazy ctx (per_layer_token_embd,
+      51 GiB, ctx_key.lazy) skips the mmap-from-file path and routes into
+      ggml_backend_meta_alloc_ctx_tensors_from_buft → per-simple-backend alloc →
+      OOM → NULL → assert. FIX DIRECTION: in SPLIT_MODE_TENSOR, route ctx_key.lazy
+      contexts to the CPU host path (treat lazy ctxs as if buft were the CPU default,
+      or pin lazy ctxs to CPU dev explicitly before the meta split decision), so PLE
+      stays lazy-host in tensor mode exactly as in layer mode. Also verify the eval
+      branch (deea0a591) exercised tensor mode only with the censored baseline,
+      whose PLE (pleq8) took the same meta path without the 51GiB lazy tensor —
+      check whether the censored baseline's per_layer_token_embd was smaller/hosted.
 - [ ] One clean GPU window: instrumented rebuild profile + layer baseline
 - [ ] Implement chosen fix (A/B per profile)
 - [ ] Bench protocol pass, commit on branch, PR-quality summary
