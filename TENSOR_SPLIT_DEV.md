@@ -406,3 +406,26 @@ or work around, then rerun the 4-way straggler test. Log: /tmp/tsplit-4way.log.
    fixes, one from a GPT Pro consult), decode honestly measured (4.52 t/s 12-way
    — straggler-bound), 28 commits pushed, next-arc options documented.
 Lane :8331 stable and serving. Good night.
+
+## 4-WAY RETEST 2026-09-07 03:42 — straggler hypothesis CONFIRMED, measurement arc complete
+
+RESOLVED: the earlier '2 meta backends' finding was MY hand-typed UUID typo (541e vs
+5419 — third time tonight; ALWAYS derive device lists programmatically). With the
+corrected 4-GPU set (5090 + 3x3090, programmatic, validated vs live inventory):
+server UP 03:40:21, ZERO asserts, decode: WARMUP 11.34, RUN1 12.69, RUN2 12.80,
+RUN3 12.81 → MEDIAN 12.80 tok/s.
+
+THE SCALING STORY (all 32k, censored model, request-inclusive):
+  12-way (8x 5060Ti stragglers): 4.52 tok/s
+   4-way (fast devices only):    12.80 tok/s   (2.8x — straggler effect confirmed)
+   9-GPU layer-split:            54.70 tok/s   (4.3x above best tensor mode)
+
+CONCLUSION: even straggler-free, per-op collectives dominate decode (78 vs 18.3
+ms/token). Config-level tuning cannot reach 54.7 — confirms the consult's second
+point. REMAINING PATHS (ranked): (1) mode specialization — tensor-split as the
+PREFILL lane (uid shape-cache recovers the 40x prefill collapse; prefill is where
+tensor parallelism genuinely wins on MoE), layer-split stays decode; (2) MTP
+composition on tensor mode (12.8 x ~2.5-3 acceptance-gated ~= 32-38 t/s — still
+short); (3) full hybrid — not supported by today's data (collectives dominate).
+Arc 1 (correctness + measurement) COMPLETE; arc 2 = uid shape-cache + prefill
+specialization. Artifacts: /tmp/tsplit-4way-fix.log, /tmp/tsplit-decode-measure.log.
