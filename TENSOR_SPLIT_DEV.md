@@ -172,8 +172,22 @@ C. **Profile-first** (cheapest, do this before A/B):
       through them; the 2× smells like the transpose swapping the axis-0/1 roles so
       the concat double-counts one dim. Graph context: qwen4exp.cpp:717-724 builds
       qkv_mixed (named linear_attn_qkv_mixed), :1260 feeds build_conv_state_at.
-- [ ] Fix the TRANSPOSE/CONSUMER ratio propagation (crash site 3 — segmentation
-      table itself is correct per config mapping)
+- [x] HANDLER-LEVEL ANALYSIS 2026-09-07 02:05 (handle_concat meta:562-575,
+      handle_transpose meta:727-745): the ratio check at meta:1069-1105 fires on the
+      CONCAT that INHERITED src0's split state (branch 3: `src_ss[0].axis ==
+      src_ss[1].axis && != concat_axis → return src_ss[0]` — assumes ratios agree;
+      they don't). src0: ne[5]=256 ×nr[0]=5 (=1280/backend-5) vs src1 (transposed
+      qkv_mixed) sum=640 — src0 and src1 have DIFFERENT segment layouts on the same
+      axis. handle_transpose is simple axis-swap (0↔1, keeps nr) — the transposed
+      qkv_mixed carries its 5×2048 segmentation through onto axis 1. NEXT-SESSION
+      DERIVATION: identify src0 of node_37 (likely the conv-state piece from
+      build_conv_state_at, qwen4exp.cpp:1260 — r_cache configured SPLIT_AXIS_0 with
+      ssm_out pairing) and either (a) make its segmentation match qkv_mixed's 5×2048
+      (config-side), or (b) teach handle_concat to build a consistent merged state
+      instead of inheriting src0 when ratios disagree (handler-side, more general).
+      Handler-side (b) is the principled fix for all archs.
+- [ ] Fix handle_concat ratio-inheritance (crash site 3, handler-side) or align
+      r_cache segmentation (config-side)
 - [ ] Memory-placement fix for mirrored caches at 262k (crash site 2)
 - [ ] 12-GPU instrumented run for rebuild-phase timings once load completes
 - [ ] 9-GPU placement planner fix (single-range alloc on device 0)
