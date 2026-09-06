@@ -815,6 +815,30 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             split_state.nr[is] = nr_s;
         }
         split_state.n_segments = segments.size();
+
+        // [tsplit-dev] crash-site-3 fix: the GDN conv-window concat (concat(r_cache_state,
+        // transposed(qkv_mixed))) requires the r_cache per-backend channel distribution
+        // to mirror the qkv weight's distribution scaled by the conv window. Independent
+        // even-weight+granularity rounding distributes extra chunks to different backends
+        // (observed cache extras {3,5,8,11} vs qkv {3,6,8,11}) and the CONCAT ratio check
+        // catches the divergence. Pair the distributions explicitly.
+        if (std::regex_match(tensor_name, pattern_r_cache)) {
+            const std::string qkv_prefix = "blk." + std::to_string(tc.il) + ".";
+            const ggml_tensor * qkv_w = ud->model->get_tensor((qkv_prefix + "attn_qkv.weight").c_str());
+            if (qkv_w != nullptr) {
+                const ggml_backend_meta_split_state qkv_ss = llama_meta_device_get_split_state(qkv_w, userdata);
+                if (qkv_ss.axis >= 0 && qkv_ss.axis < GGML_MAX_DIMS && qkv_ss.n_segments >= 1 &&
+                        qkv_ss.n_segments == split_state.n_segments) {
+                    const int64_t window = hparams.ssm_d_conv - 1;
+                    for (size_t is = 0; is < split_state.n_segments; is++) {
+                        split_state.nr[is] = qkv_ss.nr[is];
+                        for (size_t j = 0; j < ud->n_devices; j++) {
+                            split_state.ne[is*ud->n_devices + j] = qkv_ss.ne[is*ud->n_devices + j] * window;
+                        }
+                    }
+                }
+            }
+        }
     } else {
         memset(split_state.ne, 0, sizeof(split_state.ne));
         split_state.nr[0] = 1;
