@@ -312,3 +312,23 @@ Next session: implement the kv-cache mirror/subset rule for low-head layers →
 rebuild → 64k window (expect next site or load) → then the rebuild-tax measurement
 (the Option C goal: 'meta rebuild:' phase timings at varying -p) → crash site 2
 (indexer mirror memory at 262k) → bench protocol → done.
+
+## CRASH SITE 5 CHAIN (post site-4 fix, 2026-09-07 02:30) — pure memory placement now
+
+Both ratio/consistency asserts are FIXED and cleared (commits 762f2c64a, 9169c14ec).
+What remains is the MEMORY CLASS on 16 GiB cards (5x 5060 Ti in the 12-GPU pool):
+- 64k ctx: KV-mirror (48 tensors, 6.44 GiB/card) OOMs CUDA4 at meta:1798
+- 32k ctx: new variant meta:1731 `GGML_ASSERT(bufs.back() != nullptr)` in
+  ggml_backend_meta_alloc_buffer (a direct per-backend buffer alloc OOM)
+
+Numbers per 16 GiB card at 64k: weights ~5.5 + KV-mirror 6.44 + indexer-mirror ~2.4
++ compute ~1.5 = ~15.8 GiB = exactly the card limit — the mirrors are the problem.
+FIX DIRECTION (next dev arc): subset/hybrid placement instead of full mirrors —
+(a) full-attn KV (2 heads): place head h on backend subset {2 backends}, Q routes
+    per-head (the get_layer_buft_list hybrid hook, llama-model.cpp:1471);
+(b) indexer cache: host-pinned mirrored buffer (tiny compute, PCIe OK);
+(c) OR asymmetric -ts: give 5060 Tis smaller weight shares to fund their mirrors.
+Then: rebuild-tax measurement (Option C goal), 262k path, bench protocol.
+
+Session 2026-09-06/07 final: 21 commits; sites 3+4 FIXED VERIFIED COMMITTED;
+research/recon/instrumentation complete; lane (:8331) serving throughout.
