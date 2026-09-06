@@ -361,3 +361,26 @@ run layer-split within the tensor-mode lane — the get_layer_buft_list hook).
 Option (c) is the pragmatic next arc: qwen4exp is 3/4 GDN layers — tensor-split
 the GDN layers (all sites 1-5 now fixed for them), layer-split the 12 full-attn
 layers. This mirrors how the model actually computes.
+
+## DECODE MEASUREMENT 2026-09-07 03:20 — honest number, architecture verdict
+
+First working tensor-mode decode (32k asym-ts 4,3.5x3,1.3x8, 12-way, censored model):
+WARMUP 4.16, RUN1 4.53, RUN2 4.51, RUN3 4.52 → MEDIAN 4.52 tok/s request-inclusive,
+ZERO rebuild events (uid-rebuild tax not active at steady decode).
+
+vs layer-split 54.7 t/s = 12.1x deficit. vs prototype 44.2 (equal-ts, old pool,
+pre-fixes) — the deficit is the STRAGGLER-BOUND COLLECTIVE: every 12-way op waits
+for the slowest 5060 Ti (~1/4 of 5090 compute) + mirror redundancy on full-attn
+layers. CONFIRMS GPT Pro phase-1: 'the measured decode gap is almost numerically
+identical to the measured 12-way collective tax' — correctness fixes alone cannot
+reach 54.7 on this heterogeneous pool.
+
+NEXT-ARC OPTIONS (from the consult + measurement):
+(1) HYBRID: GDN layers tensor-split across FAST devices only (5090+3x3090, 4-way),
+    full-attn layers + 5060Tis in layer-split roles (memory donors) — few-way
+    collectives among comparable-speed devices;
+(2) MTP composition on tensor mode (draft/verify alternation — needs the uid cache
+    first, then may compound with MTP's 2.8x-at-depth);
+(3) Accept tensor-split as the PREFILL/MTP lane (uid-cache target) and keep
+    layer-split for decode — the two modes have complementary strengths.
+Measurement artifacts: /tmp/tsplit-decode-measure.log. Branch: d2e4e63b8.
