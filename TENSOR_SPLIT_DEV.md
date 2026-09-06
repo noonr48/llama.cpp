@@ -332,3 +332,14 @@ Then: rebuild-tax measurement (Option C goal), 262k path, bench protocol.
 
 Session 2026-09-06/07 final: 21 commits; sites 3+4 FIXED VERIFIED COMMITTED;
 research/recon/instrumentation complete; lane (:8331) serving throughout.
+
+## MEMORY-PATH CONCLUSION 2026-09-07 02:40 — 1731 diagnostic settles it
+
+`meta direct alloc FAILED: backend 4/12 (CUDA4) requested=686 MiB` (asym-ts 64k):
+a 686 MiB last-straw alloc on a 16 GiB 5060 Ti already carrying weights 3.4 +
+KV-mirror 6.44 + indexer-mirror ~2.4 + PLE/conv/compute — CONCLUSIVE: at 64k+
+the MIRROR CLASS cannot fit 16 GiB cards under ANY -ts weighting (mirrors don't
+scale with ts). Options for the next arc: (1) KV subset placement (2 heads → 2
+backends, per-head Q routing — the principled fix); (2) host-pinned mirrors;
+(3) 32k ctx halves mirrors (3.2+1.2 GiB — fits) for the instrumented measurement
+phase, deferring the 262k-capable placement fix.

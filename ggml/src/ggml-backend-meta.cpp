@@ -1728,6 +1728,12 @@ static ggml_backend_buffer_t ggml_backend_meta_buffer_type_alloc_buffer(ggml_bac
     bufs.reserve(n_simple_bufts);
     for (size_t i = 0; i < n_simple_bufts; i++) {
         bufs.push_back(ggml_backend_buft_alloc_buffer(ggml_backend_meta_buft_simple_buft(buft, i), size));
+        if (!bufs.back()) {
+            // [tsplit-dev] direct-alloc failure diagnostic
+            fprintf(stderr, "meta direct alloc FAILED: backend %zu/%zu (%s) requested=%zu MiB\n",
+                    i, n_simple_bufts, ggml_backend_buft_name(ggml_backend_meta_buft_simple_buft(buft, i)), size / (1024 * 1024));
+            fflush(stderr);
+        }
         GGML_ASSERT(bufs.back() != nullptr);
         max_size = std::max(max_size, ggml_backend_buffer_get_size(bufs.back()));
     }
