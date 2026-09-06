@@ -159,7 +159,21 @@ C. **Profile-first** (cheapest, do this before A/B):
       concat's ratio requirements in llama-model.cpp get_split_segments (256 vs 640
       = 2*320: likely key_dim vs 2*key_dim+value_dim style arithmetic on the
       transposed view).
-- [ ] Fix the qwen4exp linear-attn qkv split segments (crash site 3)
+- [x] CONFIG MAPPING 2026-09-07 02:00 (from raw config.json text_config):
+      linear_key_head_dim=128, linear_num_key_heads=16, linear_value_head_dim=128,
+      linear_num_value_heads=48, conv kernel 4. → key_dim = 128*16 = 2048;
+      value_dim = 128*48 = 6144; 2*key_dim + value_dim = 10240 == the diagnostic's
+      ne[axis] ✓. head_ratio = 48/16 = 3 (INTEGER) → {{2048, 2+3}} = 5×2048 is a
+      CORRECT partition of qkv_mixed (2 key + 3 value segments). Therefore the
+      factor-2 mismatch (lhs 256*5=1280 vs rhs 640) is NOT in the segmentation table
+      but in the TRANSPOSE/CONCAT consumer arithmetic (src1 = "qkv_mixed (transposed)").
+      NEXT-SESSION TARGET: read the GGML_OP_TRANSPOSE + GGML_OP_CONCAT split-state
+      handlers (ggml-backend-meta.cpp:518-950 dispatch) and the ratio propagation
+      through them; the 2× smells like the transpose swapping the axis-0/1 roles so
+      the concat double-counts one dim. Graph context: qwen4exp.cpp:717-724 builds
+      qkv_mixed (named linear_attn_qkv_mixed), :1260 feeds build_conv_state_at.
+- [ ] Fix the TRANSPOSE/CONSUMER ratio propagation (crash site 3 — segmentation
+      table itself is correct per config mapping)
 - [ ] Memory-placement fix for mirrored caches at 262k (crash site 2)
 - [ ] 12-GPU instrumented run for rebuild-phase timings once load completes
 - [ ] 9-GPU placement planner fix (single-range alloc on device 0)
