@@ -858,6 +858,32 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
                 }
             }
         }
+
+        // [tsplit-dev] arc-2 numerics fix: the GDN RECURRENT state (s_cache) must hold
+        // the SAME per-backend head sets as the qkv-derived activations that
+        // handle_gated_delta_net consumes. Independent rounding lands extra heads on
+        // different backends (the same divergence class as the conv-state fix above)
+        // and corrupts the recurrence across all GDN layers: fluent but ungrounded
+        // generation (needle terminates with unrelated answers at any depth).
+        // Pairing: keep s_cache's own structure (1 segment x nr=head_ratio); set
+        // ne[j] := qkv_ne[j] * head_v_dim. Totals verify: sum_j ne * nr =
+        // 2048 * 128 * 3 = 786432 = 48 value heads * S_v^2.
+        if (std::regex_match(tensor_name, pattern_s_cache)) {
+            const std::string qkv_prefix = "blk." + std::to_string(tc.il) + ".";
+            const ggml_tensor * qkv_w = ud->model->get_tensor((qkv_prefix + "attn_qkv.weight").c_str());
+            if (qkv_w != nullptr) {
+                const ggml_backend_meta_split_state qkv_ss = llama_meta_device_get_split_state(qkv_w, userdata);
+                if (qkv_ss.axis >= 0 && qkv_ss.axis < GGML_MAX_DIMS && qkv_ss.n_segments >= 1 &&
+                        qkv_ss.n_segments == split_state.n_segments) {
+                    const int64_t head_v_dim = hparams.ssm_d_state;
+                    for (size_t is = 0; is < split_state.n_segments; is++) {
+                        for (size_t j = 0; j < ud->n_devices; j++) {
+                            split_state.ne[is*ud->n_devices + j] = qkv_ss.ne[is*ud->n_devices + j] * head_v_dim;
+                        }
+                    }
+                }
+            }
+        }
     } else {
         memset(split_state.ne, 0, sizeof(split_state.ne));
         split_state.nr[0] = 1;

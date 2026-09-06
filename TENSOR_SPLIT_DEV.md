@@ -565,3 +565,27 @@ handle_gated_delta_net consumes). Layout work: s_cache axis structure [S_v,S_v,
 H_v,n_seqs] vs the config's SPLIT_AXIS_0 — derive the exact head-axis mapping
 first, then mirror the pairing block from the r_cache fix. Gate: needle ladder
 5k (must terminate with the RIGHT code) then 27k.
+
+## S_CACHE PAIRING TESTED 2026-09-07 04:50 — honest negative; bug is deeper
+
+Fix applied (same 762f2c64a pattern, factor head_v_dim=128, totals verify:
+2048*128*3 = 786432 = 48 value heads * S_v^2; segment structure preserved).
+5k needle AFTER the fix: STILL FAILS — terminates at 49 tokens with unrelated
+garbage ('An awk or sed command...') — the same fluent-but-ungrounded class.
+The s_cache divergence was real (independent rounding) and is now repaired,
+but it was NOT the (sole) corruption source.
+
+REMAINING SUSPECTS (arc 2 continues): (1) the layer-boundary PARTIAL-as-complete
+consumption (the :876 true-regime trace — the sharpest next probe: log ONE
+full-attn layer's output state in both regimes); (2) the GDN scan itself
+(ggml_gated_delta_net split execution semantics — verify the per-backend
+head-locality assumption holds for the recurrence); (3) the conv path at runtime
+(the r_cache pairing fixed the DISTRIBUTION but the conv compute's cross-backend
+reads may still mix). DEBUG LADDER: needle at 2k (even shallower) to find the
+depth where grounding first breaks; binary-search the corruption layer by
+splitting one layer at a time (run -sm tensor with n_gpu_layers tricks or a
+layer-mask debug build).
+
+Session 2026-09-06/07 arc-1+2a state: 39 commits incl. 4 novel fixes (3 verified
+working, 1 mathematically-correct-but-insufficient), needle definitively negative
+with clean controls, decode/prefill/MTP honestly mapped, review closed.
