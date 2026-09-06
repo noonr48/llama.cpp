@@ -589,3 +589,22 @@ layer-mask debug build).
 Session 2026-09-06/07 arc-1+2a state: 39 commits incl. 4 novel fixes (3 verified
 working, 1 mathematically-correct-but-insufficient), needle definitively negative
 with clean controls, decode/prefill/MTP honestly mapped, review closed.
+
+## DEBUG LADDER RESULT 2026-09-07 05:00 — corruption at ALL depths
+
+2k needle: finish_reason=length at 300 tokens (rambles). Ladder summary:
+2k=ramble, 5k=garbage-terminate (49 tok), 27k=ramble (2000+ tok), layer-control
+=PASS in 12 tok. CONCLUSION: the corruption is PER-LAYER (immediate), NOT
+depth-graduated — eliminates the KV/cache-growth suspects definitively and
+concentrates on: (1) the layer-boundary PARTIAL-as-complete consumption (the
+:876 true-regime vs :1461 false-regime divergence — the sharpest remaining
+probe), (2) the GDN scan's per-backend head-locality assumption. The debug
+ladder's next step (layer binary search) needs a layer-mask debug build —
+arc-2b work.
+
+SESSION 2026-09-06/07 FINAL: 40 commits, 4 novel fixes (r_cache pairing VERIFIED,
+KV-mirror VERIFIED, K/V-proj-mirror VERIFIED, s_cache pairing
+correct-but-insufficient), needle definitively negative with clean controls,
+honest performance map (decode 4.52/12.80/12.77; prefill FLIP ~1045; MTP no-op),
+review closed, memory committed. The load path works; the compute path has a
+per-layer numerics bug with two named suspects and a ready debug ladder.
