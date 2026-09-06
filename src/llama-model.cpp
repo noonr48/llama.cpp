@@ -505,6 +505,15 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
 
         // standard attention
         if (std::regex_match(tensor_name, pattern_q_weight) || std::regex_match(tensor_name, pattern_kv_weight)) {
+            // [tsplit-dev] crash-site-6 fix (from GPT Pro consult, session 2026-09-07):
+            // when the layer's KV head count cannot cover all devices, MIRROR the K/V
+            // projections alongside their already-mirrored caches — Meta algebra gives
+            // mirrored weight x mirrored activation -> mirrored Kcur/Vcur, so SET_ROWS
+            // sees MIRRORED == MIRRORED (site 6). Q keeps its split (healthy head count).
+            if (std::regex_match(tensor_name, pattern_kv_weight) &&
+                    hparams.n_head_kv(std::stoull(tensor_name.substr(4, tensor_name.find('.', 4) - 4))) < ud->n_devices) {
+                return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_MIRRORED);
+            }
             return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_1, "attn_output.weight", "ssm_out.weight");
         }
         if (std::regex_match(tensor_name, pattern_q_bias) || std::regex_match(tensor_name, pattern_kv_bias)) {
