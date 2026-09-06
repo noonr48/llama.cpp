@@ -209,6 +209,17 @@ C. **Profile-first** (cheapest, do this before A/B):
       {{key_dim*(d_conv-1) per segment}}… see granularity fn interplay — or the
       handler-side merged state. NEXT SESSION: implement one of the two fixes,
       rebuild, 64k window. Everything else is mapped.
+- [x] EXACT FIX LINES 2026-09-07 02:20 — the two r_cache segment patterns:
+      QWEN3NEXT reference (llama-model.cpp:611-613): `{{key_dim*(d_conv-1), 2},
+      {value_dim*(d_conv-1), 1}}`; QWEN4EXP target (:627-629):
+      `{{key_dim*(d_conv-1), 2 + head_ratio}}` ← CHANGE THIS; granularity co-target
+      (:684-686): r_cache → `granularity_qkv * (ssm_d_conv - 1)`.
+      REQUIREMENT: conv-state per-backend channel share must equal (d_conv-1) × the
+      qkv_mixed per-backend share. Observed: 256×5=1280 vs 640 (=2× off, not 3× —
+      nr/ne semantics interplay; read the split_state struct def meta:~430-520 and
+      the reshape order in build_conv_state_at :1487-1520 to pick between (a)
+      step-major segments {{key_dim, (2+head_ratio)*(d_conv-1)}} + granularity_qkv,
+      or (b) channel-major with qkv-aligned per-backend boundaries.
 - [ ] Memory-placement fix for mirrored caches at 262k (crash site 2)
 - [ ] 12-GPU instrumented run for rebuild-phase timings once load completes
 - [ ] 9-GPU placement planner fix (single-range alloc on device 0)
