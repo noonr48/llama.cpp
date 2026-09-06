@@ -631,3 +631,21 @@ Debug entry: a single-layer/minimal-graph correctness test (one matmul split
 2-way, compare against CPU) — bisect the compute path op by op. Also worth:
 diff the Meta implementation against upstream PR #19378's original — the fork may
 carry a local regression.
+
+## DIVERGENCE MAP 2026-09-07 05:25 — the fork REWROTE the Meta core
+
+git diff d6f303004 (upstream #19378 landing) .. HEAD -- ggml-backend-meta.cpp:
+1071 insertions / 404 deletions. The fork's own additions include the entire
+split-state propagation machinery (the stc containers, the two-regime
+assume_sync, the handler dispatch), the rebuild path, and a noted-disabled cache
+('currently not possible due to graph-external operations... clearing it on
+every rebuild is too expensive'). The corruption lives somewhere in these
+fork-authored 1071 lines — NOT in upstream's tested core.
+
+ARC-2B BISECT PLAN: the meta.cpp history between d6f303004 and the eval branch
+base has the fork's development commits. Bisect with a tiny model + recall
+probe (adaptive_ontop_f16.gguf 279MB, 2-way tensor, the ZEBRA-code test —
+seconds per data point once the loop is scripted). First bisect commit:
+the earliest fork commit touching graph_compute/sched paths. If the corruption
+predates the qwen4exp work (i.e., the fork's very first Meta rewrite broke it),
+the fix is reconciling with upstream's tested semantics.
