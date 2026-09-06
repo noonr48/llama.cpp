@@ -198,7 +198,17 @@ C. **Profile-first** (cheapest, do this before A/B):
       derive src0's exact identity from qwen4exp.cpp build_conv_state_at (:1260),
       then choose handler-side merged-state fix vs config-side segment/granularity
       alignment for qwen4exp r_cache, implement, test at 64k window.
-- [ ] Implement crash-site-3 fix (all pieces mapped — see above)
+- [x] SRC0 IDENTIFIED 2026-09-07 02:15 (qwen4exp.cpp:1487 build_conv_state_at
+      internals + :1260 call): the failing CONCAT is the GDN conv-window SLIDE —
+      concat(conv_states_all[old state, (d_conv-1) tokens × 10240 ch], qkv_mixed[new,
+      transposed], axis=time). src0 = the old conv-state views (r_cache-shaped);
+      src1 = transposed qkv_mixed. Both split on the FEATURE axis with different
+      segment layouts (conv state granularity ×3 per the granularity fn). The fix
+      must make the conv state's feature-axis segmentation IDENTICAL to qkv_mixed's
+      5×2048 — either by configuring r_cache segments for qwen4exp as
+      {{key_dim*(d_conv-1) per segment}}… see granularity fn interplay — or the
+      handler-side merged state. NEXT SESSION: implement one of the two fixes,
+      rebuild, 64k window. Everything else is mapped.
 - [ ] Memory-placement fix for mirrored caches at 262k (crash site 2)
 - [ ] 12-GPU instrumented run for rebuild-phase timings once load completes
 - [ ] 9-GPU placement planner fix (single-range alloc on device 0)
