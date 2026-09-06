@@ -186,8 +186,19 @@ C. **Profile-first** (cheapest, do this before A/B):
       (config-side), or (b) teach handle_concat to build a consistent merged state
       instead of inheriting src0 when ratios disagree (handler-side, more general).
       Handler-side (b) is the principled fix for all archs.
-- [ ] Fix handle_concat ratio-inheritance (crash site 3, handler-side) or align
-      r_cache segmentation (config-side)
+- [x] GRANULARITY SECTION FOUND 2026-09-07 02:10 (llama-model.cpp:655-686, the
+      else/QWEN4EXP branch of the granularity lambda): qkv/conv1d/attn_gate/ssm_out
+      → granularity = lcm(lcm(blck_size,128), ssm_d_state); r_cache → granularity ×
+      (ssm_d_conv - 1) (=×3 for qwen4exp, conv kernel 4); s_cache → granularity ×
+      ssm_d_state. The diagnostic's 640 = 5×128 aligns with qkv_granularity=128
+      (blck 128) at 12 backends; src0's 5×256 layout is the coarser conv-state
+      granularity footprint. ALL DERIVATION PIECES NOW MAPPED: segments fn
+      (594-640) + granularity fn (655-686) + handle_concat (meta:562) +
+      handle_transpose (meta:727) + the ratio check (meta:1069-1105). Next session:
+      derive src0's exact identity from qwen4exp.cpp build_conv_state_at (:1260),
+      then choose handler-side merged-state fix vs config-side segment/granularity
+      alignment for qwen4exp r_cache, implement, test at 64k window.
+- [ ] Implement crash-site-3 fix (all pieces mapped — see above)
 - [ ] Memory-placement fix for mirrored caches at 262k (crash site 2)
 - [ ] 12-GPU instrumented run for rebuild-phase timings once load completes
 - [ ] 9-GPU placement planner fix (single-range alloc on device 0)
