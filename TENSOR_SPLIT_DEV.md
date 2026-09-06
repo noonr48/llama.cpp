@@ -233,6 +233,21 @@ C. **Profile-first** (cheapest, do this before A/B):
       granularity alone fixes the boundaries. Read split_state struct def (meta:~430-520,
       ne/nr semantics) + conv_states_all allocation (grep build_conv_state_at caller /
       cache init in llama-context.cpp) — then implement, rebuild, 64k window.
+- [x] FINAL PIECES 2026-09-07 02:35: (1) get_split_state's own FIXME (meta:~495):
+      "preserves/erases the information in n_segments and nr in an inconsistent
+      way… can lead to unexpected results" — the nr[0]=5 anomaly matches this
+      documented inconsistency. (2) handle_get_rows (meta:747-752): src0 axis-0 +
+      src1 mirrored → returns src state UNCHANGED (segments/nr ride through).
+      (3) handle_reshape (meta:611+): axis-remapping logic with n_segments==1
+      fast paths — the {{6144,5}} 5-SEGMENT state entering reshape takes the
+      generic path where nr/ne get re-derived; the 1280-vs-640 (2× not 3×) is
+      consistent with the window factor being folded into ne[] (256 = 640×... )
+      mid-propagation. NEXT SESSION EXECUTES: instrument ggml_backend_meta_get_split_state
+      (log name/axis/ne/nr per tensor for cache_r_l* + linear_attn_* nodes at
+      graph-build time — one CPU-only test-backend run may suffice) → pinpoint the
+      exact handler that breaks the channel-alignment → fix (likely: normalize
+      nr/n_segments in handle_reshape for multi-segment axis-0→axis-1 remaps, or
+      config-side {{key_dim, 5} per window}) → rebuild → 64k window → needle/t/s.
 - [ ] Memory-placement fix for mirrored caches at 262k (crash site 2)
 - [ ] 12-GPU instrumented run for rebuild-phase timings once load completes
 - [ ] 9-GPU placement planner fix (single-range alloc on device 0)
