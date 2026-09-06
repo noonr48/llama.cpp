@@ -290,3 +290,25 @@ C. **Profile-first** (cheapest, do this before A/B):
   then crash site 2 (mirror memory) → then the full bench protocol.
 
 Session 2026-09-06/07 status: 16 commits, tip 0cc00671d, all diagnostics in build.
+
+## CRASH SITE 4 (after site-3 fix, 2026-09-07 02:20) — full-attn KV zero-share backends
+
+`meta ratio assert: op=FLASH_ATTN_EXT name=node_666 axis=1 src1=cache_k_l3 (view)
+(permuted) (copy) src_axis=2 lhs=12*1*2 rhs=0*24 backend j=5/12`
+
+Site 3's fix WORKS (trace: cache_r_l{0,1,2} mirror their layers' qkv distributions
+with correct per-layer rotation; the linear_attn CONCAT assert is GONE — commit
+762f2c64a). The crash moved to the FULL-ATTENTION path (every 4th layer: l3, l7...):
+the KV cache (2 GQA kv-heads x 256 head_dim = 512 channels) split 12 ways at head
+granularity gives most backends a ZERO share (rhs sum=0 at j=5) while the FA op's
+state expects non-zero (lhs ne=12). FIX DIRECTION (same class as site 2's mirrored
+indexer cache): when n_kv_heads(il) < n_devices, the KV cache for that layer should
+be MIRRORED (or assigned to a head-count-sized subset) instead of zero-filling —
+see pattern_kv_cache config (llama-model.cpp ~526-528, pairs attn_output.weight)
+and the 'regular attention' granularity branch (~745-755). Mirroring 512-ch KV
+per layer is cheap (2 MB/layer/card at 65536 ctx f32).
+
+Next session: implement the kv-cache mirror/subset rule for low-head layers →
+rebuild → 64k window (expect next site or load) → then the rebuild-tax measurement
+(the Option C goal: 'meta rebuild:' phase timings at varying -p) → crash site 2
+(indexer mirror memory at 262k) → bench protocol → done.
