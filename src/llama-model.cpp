@@ -520,6 +520,16 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             return get_tensor_config_impl(tensor->ne[1] == 1 ? GGML_BACKEND_SPLIT_AXIS_MIRRORED : GGML_BACKEND_SPLIT_AXIS_1, "attn_output.weight");
         }
         if (std::regex_match(tensor_name, pattern_kv_cache) || std::regex_match(tensor_name, pattern_attn_sinks)) {
+            // [tsplit-dev] crash-site-4: with fewer KV heads than backends (qwen4exp
+            // full-attn layers: 2 GQA kv-heads vs 12 devices), even-weight split
+            // zero-fills most backends and the FLASH_ATTN_EXT ratio check catches it.
+            // Mirror the KV cache for such layers instead. CAVEAT: at 262k ctx f32
+            // this mirrors ~512 MB/layer/card (12 full-attn layers ≈ 6 GiB/card) — the
+            // production-ctx config needs subset/hybrid placement (design doc, the
+            // crash-site-2 memory class); at 64k it is ~1.6 GiB/card total.
+            if (hparams.n_head_kv(tensor_name.find("_l", 6) == std::string::npos ? 0 : std::stoull(tensor_name.substr(tensor_name.find("_l", 6) + 2))) < ud->n_devices) {
+                return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_MIRRORED);
+            }
             return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_0, "attn_output.weight");
         }
         if (std::regex_match(tensor_name, pattern_attn_out_weight)) {
