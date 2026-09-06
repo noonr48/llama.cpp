@@ -103,19 +103,27 @@ C. **Profile-first** (cheapest, do this before A/B):
       1s after the core dump, failed model load) — rerun cleanly next window.
       llama-bench gotchas learned: no `-c` flag (ctx derives from -p/-n); `-ctk f32`
       rejected (value validation) — defaults f16 are fine for rebuild profiling.
-- [ ] Fix the meta:1761 load crash. ROOT-CAUSE MAP 2026-09-07 01:05: the lazy-host
-      mmap branch in llama-model.cpp:1725 is gated on `is_default_buft`
-      (buft == device default buft). In SPLIT_MODE_TENSOR the tensors' buft is the
-      META COMPOSITE buft → gate is false → the lazy ctx (per_layer_token_embd,
-      51 GiB, ctx_key.lazy) skips the mmap-from-file path and routes into
-      ggml_backend_meta_alloc_ctx_tensors_from_buft → per-simple-backend alloc →
-      OOM → NULL → assert. FIX DIRECTION: in SPLIT_MODE_TENSOR, route ctx_key.lazy
-      contexts to the CPU host path (treat lazy ctxs as if buft were the CPU default,
-      or pin lazy ctxs to CPU dev explicitly before the meta split decision), so PLE
-      stays lazy-host in tensor mode exactly as in layer mode. Also verify the eval
-      branch (deea0a591) exercised tensor mode only with the censored baseline,
-      whose PLE (pleq8) took the same meta path without the 51GiB lazy tensor —
-      check whether the censored baseline's per_layer_token_embd was smaller/hosted.
+- [ ] Fix the meta:1761 load crash. BISECT TABLE 2026-09-07 01:10 (all on build-tsplit
+      = deea0a591 + timing-only instrumentation; lazy-divert stashed as
+      "lazy-divert experiment"):
+        1. uncensored + new 9-GPU mix, no divert: CRASH meta:1761
+        2. uncensored + divert, new mix: CRASH
+        3. censored baseline + divert, new mix: CRASH
+        4. censored baseline, no divert, new mix (5090+3x3090+5x5060Ti): CRASH
+        5. censored baseline, no divert, OLD mix (5090+8x5060Ti): CRASH
+      → NOT my edits, NOT the model, NOT the GPU set. Remaining deltas vs the
+      successful eval-branch bench (decode 47.3-47.8 measured ~2026-09-03):
+      its exact invocation/build. NOTE: REPORT.md's `-sm tensor` example is the
+      older 27B DENSE work (official lcpp build) — the MoE tsplit bench artifacts
+      from Sep 3-4 live elsewhere (shell history, /tmp logs, tsplit-eval session
+      dirs). NEXT-SESSION OPTIONS (pick either):
+      (a) recover the original MoE tsplit invocation (grep zsh/bash history for
+          `qwen38-tsplit-eval` era `-sm tensor`, /tmp/*tsplit*.log, ~Sep 3-4 mtime)
+      (b) instrument the alloc loop: print (i, n_simple_bufts, ctx tensor count,
+          bytes requested, backend name, backend free VRAM) before the assert at
+          meta:1761 — one load identifies the failing backend + what it tried to fit.
+      Also check: the successful bench may have used -ncmoe / --no-host / lazy-mode
+      flags that shrink the GPU-resident set (the eval-era fork had them).
 - [ ] One clean GPU window: instrumented rebuild profile + layer baseline
 - [ ] Implement chosen fix (A/B per profile)
 - [ ] Bench protocol pass, commit on branch, PR-quality summary
