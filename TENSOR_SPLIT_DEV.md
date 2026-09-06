@@ -429,3 +429,22 @@ composition on tensor mode (12.8 x ~2.5-3 acceptance-gated ~= 32-38 t/s — stil
 short); (3) full hybrid — not supported by today's data (collectives dominate).
 Arc 1 (correctness + measurement) COMPLETE; arc 2 = uid shape-cache + prefill
 specialization. Artifacts: /tmp/tsplit-4way-fix.log, /tmp/tsplit-decode-measure.log.
+
+## MTP COMPOSITION TEST 2026-09-07 03:55 — no-op verdict, cheap experiments exhausted
+
+4-way tensor + draft-mtp n1 (censored fork draft, deea0a591 layer-split compose):
+server UP, ZERO asserts, decode WARMUP 10.97, R1 12.71, R2 12.82 → MEDIAN 12.77
+tok/s vs tensor-only 12.80 — MTP adds NOTHING on tensor mode (the collectives
+eat the draft speedup whole). Full decode picture:
+
+  layer-split no-MTP:          54.7 t/s   (production baseline)
+  layer-split + MTP n2:        50.6-62+   (temp-dependent; deployed config)
+  tensor 4-way:                12.80
+  tensor 4-way + MTP n1:       12.77      ← no gain
+  tensor 12-way:                4.52
+
+CONCLUSION (arc-1 final): decode on this fleet belongs to layer-split+MTP.
+Tensor split's remaining value = PREFILL (mode specialization): the uid
+shape-cache arc (design doc options A/B) to kill the rebuild tax, then tensor
+mode as the prefill half of a two-mode lane. Arc 2 spec is ready in this doc.
+Artifacts: /tmp/tsplit-mtp-compose.log.
