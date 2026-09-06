@@ -474,3 +474,26 @@ server-side, no fork change needed for a first cut: measure a tensor-prefill +
 layer-decode sequence manually); (b) MTP+shape alternation rebuild behavior only
 if MTP-on-tensor ever matters (measured no-op tonight); (c) 262k memory arc for
 the needle (unchanged: mirrors need subset/host placement).
+
+## NEEDLE VERDICT 2026-09-07 04:30 — controlled negative result
+
+Tensor lane (4-way, 32k ctx, censored model): deep_needle at ~27k, thinking OFF,
+temp 0 -> THREE length-failures (>200 tokens never terminating; 100/400/2000
+budgets all exhausted). CONTROL on the deployed layer lane (uncensored model,
+38,204 prompt tokens, same script): PASS in 12 completion tokens ('ORION-...' exact).
+
+CONCLUSION: the tensor-split path has a DEEP-CONTEXT QUALITY GAP — short-prompt
+generation is coherent (smoke tests pass, decode measures cleanly) but at ~27k
+context the model rambles unboundedly instead of recalling/terminating. Isolated
+by control: not the script (passes on layer), not thinking-mode (disabled), not
+the model family (both models normal on layer). Suspects (next arc): the mirrored
+K/V attention path numerics (mirrored weight x split Q -> FA with partial K/V?),
+or a residual distribution mismatch the ratio checks don't cover, or the
+conv-state path at depth. DEBUG ENTRY POINT: compare a short-vs-long prompt
+activation trace (GGML_META_DEBUG ss trace at 5k vs 25k ctx) or logprob the
+needle question on both lanes at matched ctx.
+
+ACCEPTANCE STATE (honest): serving ✓ / decode measured ✓ / needle ✗ (controlled
+negative, defines the numerics arc) / committed ✓. The goal's 'beat layer-split
+decode' remains out of reach by measurement; 'needle pass' now FAILS — arc 2 =
+numerics debugging BEFORE any architecture work.
