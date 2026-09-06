@@ -131,9 +131,29 @@ C. **Profile-first** (cheapest, do this before A/B):
       stays CPU-mmap'd. Also documented there: MTP composes only after deea0a591's
       draft-layer-split fix (2.8-4 t/s — the dispatch-tax victim), and the 12-way
       per-token sync/allreduce costs ~4.3 ms/token vs layer-split.
-- [ ] 12-GPU instrumented run: rebuild-phase timings (meta rebuild: reset/nodes/delay)
-      at varying -p shapes → quantify the dispatch tax → design the fix
-- [ ] 9-GPU placement planner fix (single-range alloc on device 0) — split segments
-      vs backend count mapping
+- [x] PROGRESS CHAIN 2026-09-07 01:44 — three distinct failure sites mapped, each
+      deeper than the last:
+      (1) llama-bench (any GPU count): weights ctx 1222 tensors/66 GiB lands UNSPLIT
+          on device 0 (matches 22bb4b9a's documented 9-GPU note).
+      (2) llama-server 12-GPU @262k fp32: WEIGHTS SPLIT SUCCEEDS (server load path
+          differs from bench) — crash moves to indexer-cache ctx: 48 tensors/9.66 GiB,
+          first=cache_idx_k_l3, OOM on CUDA4 (16 GiB card). ROOT CAUSE FOUND in code:
+          llama-model.cpp ~line 495 `pattern_idx_cache → SPLIT_AXIS_MIRRORED`
+          ("qsa indexer has one key head... cannot be split") + PLE r_cache also
+          MIRRORED — every backend needs a full 9.66 GiB copy at 262k; with current
+          residents (VoxCPM 6.9G / voice-tutor 4.9G on pool cards) the 16 GiB cards
+          can't fit weights-share + mirror + KV + buffers. Original bench likely ran
+          resident-free.
+      (3) llama-server 12-GPU @65536 (indexer mirror ~2.4 GiB): loads PAST both,
+          crashes at NEW site: ggml-backend-meta.cpp:1099 GGML_ASSERT(
+          split_state.ne[j]*split_state.nr[0] * tensor->src[i]->ne[src_ss[i].axis]
+          == sum * tensor->ne[split_state.axis]) — split-state SHAPE CONSISTENCY
+          check (~the snapshot/validation region). NEXT DEBUG TARGET.
+- [ ] Fix meta:1099 split-state shape assert (read the validation fn + which tensor
+      triggers; likely indexer-cache/projection interplay at reduced ctx)
+- [ ] Memory-placement fix for mirrored caches at 262k (host-pinned or subset
+      placement; the indexer is tiny compute — PCIe reads may be acceptable)
+- [ ] 12-GPU instrumented run for rebuild-phase timings once load completes
+- [ ] 9-GPU placement planner fix (single-range alloc on device 0)
 - [ ] Implement chosen fix (A/B per profile)
 - [ ] Bench protocol pass, commit on branch, PR-quality summary
