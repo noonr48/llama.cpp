@@ -103,9 +103,15 @@ C. **Profile-first** (cheapest, do this before A/B):
       1s after the core dump, failed model load) — rerun cleanly next window.
       llama-bench gotchas learned: no `-c` flag (ctx derives from -p/-n); `-ctk f32`
       rejected (value validation) — defaults f16 are fine for rebuild profiling.
-- [ ] Fix the meta:1761 load crash (read alloc_ctx_tensors_from_buft + how PLE
-      lazy-host buffers are created; compare tensor sets censored-baseline vs
-      uncensored-raw-quant)
+- [ ] Fix the meta:1761 load crash. SHARPENED 2026-09-07 01:00: the function already
+      handles the zero-sized-tensor NULL return (any_nonzero_slice -> dummy buffer),
+      so the assert firing means ggml_backend_alloc_ctx_tensors_from_buft returned NULL
+      WITH nonzero slices = ALLOCATION FAILURE on a simple backend. Prime suspect:
+      per_layer_token_embd (51 GiB, Q8_0) forced into the meta split path instead of
+      the fork's >4GiB lazy-host rule; every GPU slice OOMs. Next step: trace where the
+      loader assigns per_layer_token_embd's buft in SPLIT_MODE_TENSOR (compare with
+      layer mode's lazy-host override) — check llama-model.cpp get_layer_buft_list /
+      override-tensor handling for the meta composite buft.
 - [ ] One clean GPU window: instrumented rebuild profile + layer baseline
 - [ ] Implement chosen fix (A/B per profile)
 - [ ] Bench protocol pass, commit on branch, PR-quality summary
