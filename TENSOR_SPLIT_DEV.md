@@ -124,6 +124,16 @@ C. **Profile-first** (cheapest, do this before A/B):
           meta:1761 — one load identifies the failing backend + what it tried to fit.
       Also check: the successful bench may have used -ncmoe / --no-host / lazy-mode
       flags that shrink the GPU-resident set (the eval-era fork had them).
-- [ ] One clean GPU window: instrumented rebuild profile + layer baseline
+- [x] MYSTERY SOLVED 2026-09-07 01:35: commit 22bb4b9a's own message documents the
+      66-GiB-single-range-alloc-on-device-0 as a KNOWN 9-GPU limitation ("planner
+      needs work"). KNOWN-GOOD tensor config = 12-GPU pool, `-ts 1.3x12`, fp32 KV 262k:
+      loads healthy, VRAM 14.2-17.4 GiB/card, decode 44.2 t/s temp-1.0, ~50.7 GiB PLE
+      stays CPU-mmap'd. Also documented there: MTP composes only after deea0a591's
+      draft-layer-split fix (2.8-4 t/s — the dispatch-tax victim), and the 12-way
+      per-token sync/allreduce costs ~4.3 ms/token vs layer-split.
+- [ ] 12-GPU instrumented run: rebuild-phase timings (meta rebuild: reset/nodes/delay)
+      at varying -p shapes → quantify the dispatch tax → design the fix
+- [ ] 9-GPU placement planner fix (single-range alloc on device 0) — split segments
+      vs backend count mapping
 - [ ] Implement chosen fix (A/B per profile)
 - [ ] Bench protocol pass, commit on branch, PR-quality summary

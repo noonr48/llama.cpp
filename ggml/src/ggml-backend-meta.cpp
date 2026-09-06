@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -1757,6 +1758,17 @@ struct ggml_backend_buffer * ggml_backend_meta_alloc_ctx_tensors_from_buft(struc
                 t->buffer = meta_buf_ctx->bufs[i].get();
             }
         }
+        // [tsplit-dev] alloc-failure diagnostic: identify the failing backend + what it tried to fit
+        if (!meta_buf_ctx->bufs[i]) {
+            size_t ctx_bytes = 0; const char * first_name = ""; int ctx_n = 0;
+            for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+                ctx_bytes += ggml_nbytes(t); ctx_n++;
+                if (ctx_n == 1) first_name = t->name;
+            }
+            fprintf(stderr, "meta alloc FAILED: backend %zu/%zu (%s) ctx tensors=%d bytes=%zu first=%s\n",
+                    i, n_simple_bufts, ggml_backend_buft_name(simple_buft), ctx_n, ctx_bytes, first_name);
+            fflush(stderr);
+        }
         GGML_ASSERT(meta_buf_ctx->bufs[i]);
         meta_buf->size = std::max(meta_buf->size, ggml_backend_buffer_get_size(meta_buf_ctx->bufs[i].get()));
     }
@@ -1969,6 +1981,10 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
     // If the previous cgraph had a defined UID it can be used to skip rebuilding the subgraphs per simple backend.
     const bool needs_rebuild = (cgraph->uid == 0) || (cgraph->uid != backend_ctx->uid);
 
+    // [tsplit-dev] Option C: rebuild phase timing (reset / node-population / MoE delay scan)
+    const auto t_rb_t0 = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point t_rb_t1 = t_rb_t0, t_rb_t2 = t_rb_t0, t_rb_t3 = t_rb_t0;
+
     bool max_nnodes_raised = false;
     if (cgraph->n_nodes > backend_ctx->max_nnodes) {
         for (size_t j = 0; j < n_backends; j++) {
@@ -2002,6 +2018,7 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
             }
             stc.simple_tensors.clear();
         }
+        t_rb_t1 = std::chrono::steady_clock::now(); // [tsplit-dev] Phase A end: container reset
         size_t n_subgraphs  = 0;
         size_t max_tmp_size = 0;
 
@@ -2020,6 +2037,7 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                 GGML_ASSERT(bcj.nodes[i]);
             }
         }
+        t_rb_t2 = std::chrono::steady_clock::now(); // [tsplit-dev] Phase B end: node population
 
         {
             // For MoE models it may make sense to delay the AllReduce in order to reduce I/O:
@@ -2221,6 +2239,16 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                 i_start = i + 1;
             }
             GGML_ASSERT(i_start == cgraph->n_nodes);
+        }
+        t_rb_t3 = std::chrono::steady_clock::now(); // [tsplit-dev] Phase C end: MoE delay scan
+
+        {
+            const double ms_reset = std::chrono::duration<double, std::milli>(t_rb_t1 - t_rb_t0).count();
+            const double ms_nodes = std::chrono::duration<double, std::milli>(t_rb_t2 - t_rb_t1).count();
+            const double ms_delay = std::chrono::duration<double, std::milli>(t_rb_t3 - t_rb_t2).count();
+            const double ms_total = std::chrono::duration<double, std::milli>(t_rb_t3 - t_rb_t0).count();
+            GGML_LOG_INFO("meta rebuild: total=%.2fms (reset=%.2f nodes=%.2f delay=%.2f) n_nodes=%d n_backends=%zu\n",
+                          ms_total, ms_reset, ms_nodes, ms_delay, cgraph->n_nodes, n_backends);
         }
 
         backend_ctx->uid         = cgraph->uid;
