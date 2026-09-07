@@ -890,3 +890,26 @@ NEXT SESSION ENTRY: option (a) is the cleanest — the meta population loop
 add a ggml_backend_buffer_is_meta(node->buffer) guard so foreign nodes pass
 through to their own (already-initialized) backends. The context backends fix
 (v2, committed) makes the scheduler side ready.
+
+## V5 2026-09-07 12:05 — the foreign-node guard reveals the pervasive assumption
+
+The population-loop guard (meta.cpp ~2084) works — v5 passes that site — but the
+next assert fires at meta.cpp:464 (buffer_simple_buft's is_meta check): yet
+another cgraph walk touching foreign nodes. The Meta composite asserts on
+foreign buffers in EVERY node walk (split-state callback ~838, population
+~2084/~2362, delay scan ~2249, buffer accessors 464/477, compute...). Guard-
+patching is whack-a-mole through ~10+ sites.
+
+THE SYSTEMATIC FIX (the real next-session work): pre-partition the cgraph into
+meta-owned and foreign subgraphs BEFORE ggml_backend_meta_graph_compute sees it
+— either in the scheduler (a wrapper backend that splits by buffer ownership)
+or as a first pass inside meta_graph_compute that builds a filtered cgraph of
+only meta-buffered nodes. The foreign nodes' ops run on their own backends
+(already initialized — the v2 context fix). This is a focused-session change,
+not incremental guards.
+
+CURRENT HYBRID STATE SUMMARY (v1-v5):
+- Loader routing (get_layer_buft_list): WORKS (GDN on individuals, full-attn on Meta)
+- Context backends: WORKS (the scheduler has all 5 backends)
+- Memory: v4's -ts 3,1,1,1 passes allocation
+- Remaining: the Meta's graph machinery must skip/partition foreign nodes

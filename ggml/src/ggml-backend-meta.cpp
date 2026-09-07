@@ -2081,6 +2081,13 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                     bcj.nodes[i] = node;
                     continue;
                 }
+                // [inverse-hybrid] Foreign-buffer nodes (hybrid-routed GDN layers on individual
+                // CUDA devices) pass through unchanged — their ops run on their own backends
+                // (initialized in llama-context), not on the Meta's simple backends.
+                if (!ggml_backend_buffer_is_meta(node->buffer)) {
+                    bcj.nodes[i] = node;
+                    continue;
+                }
                 bcj.nodes[i] = ggml_backend_meta_buffer_simple_tensor(node, j);
                 GGML_ASSERT(bcj.nodes[i]);
             }
