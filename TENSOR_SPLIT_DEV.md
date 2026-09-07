@@ -780,3 +780,14 @@ fail-closed, auto-restore); the complete tensor-corruption characterization
 (local intact/global broken; token-level logprob proof; adjacency/temp/length/
 cache/content ruled out; GDN recurrent-state split the prime suspect); 6 design-
 doc commits pushed (tip 5fc8e5546). Lane healthy throughout.
+
+## CRASH SITE RESOLVED 2026-09-07 11:02
+
+coredumpctl on the -ngl segfault (PID 57192): the crashing thread's frame #0 =
+ggml_backend_meta_graph_compute (libggml-base +0x4fb11), called from
+llama_decode -> process_ubatch -> graph_compute -> sched_graph_compute_async.
+The mixed CPU/meta boundary crashes INSIDE the meta's own compute at the first
+decode (generation) graph — Release build, no line info (addr2line resolves
+the function only). Fix entry: rebuild with -DCMAKE_BUILD_TYPE=RelWithDebInfo,
+reproduce once, get the exact line; the crash is in the meta compute's handling
+of a node whose backend set spans CPU+meta at decode-time graph shapes.
