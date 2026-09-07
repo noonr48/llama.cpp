@@ -859,3 +859,34 @@ device bufts (layer-split semantics), full-attn layers -> the Meta buft (tensor
 split, clean per the bisection). The graph/scheduler handles mixed backends
 per-op (the needs_rebuild alloc fix already cleared the mixed-boundary crash).
 Estimated: one focused session (loader change + boot + needle + perf ladder).
+
+## INVERSE HYBRID v3/v4 2026-09-07 12:00 — the Meta asserts on foreign tensors
+
+v3 (-ts 6,0.4,0.4,0.4): meta alloc FAILED CUDA0 ctx tensors=48 bytes=3GiB
+(cache_k_l3) — the full-attn KV buffers exceed any single device's headroom
+on top of its GDN share.
+v4 (-ts 3,1,1,1): passes allocation, aborts at meta.cpp:477
+GGML_ASSERT(ggml_backend_buffer_is_meta(tensor->buffer)) — the meta's
+buffer_simple_tensor receives a GDN tensor whose buffer is a plain CUDA0-2
+buffer (not a meta buffer). The meta backend's graph machinery walks ALL
+graph nodes including the hybrid-routed GDN ones and asserts on foreign
+buffers. Also: the 'inverse-hybrid active' log never prints (the LLAMA_LOG_INFO
+is swallowed or the string isn't in the server binary; behavior DID change so
+the routing fires).
+
+CONCLUSION (v1-v4 arc): the flag-level -ot route AND the loader-level
+get_layer_buft_list route both bottom out at the Meta composite's
+all-nodes-are-mine assumption. The inverse hybrid requires either:
+(a) teaching ggml_backend_meta_graph_compute to SKIP foreign-buffer nodes
+    (a filter in the population loops + the subgraph scan), or
+(b) NOT using the Meta at all — run the full-attn layers as layer-split on
+    individual devices and GDN the same way (i.e., plain layer mode) and get
+    the prefill win from the -ub 1024 tuning already deployed, or
+(c) the heavier hybrid: a dedicated small Meta composite for full-attn
+    attention tensors only, with its device set disjoint from the GDN hosts.
+
+NEXT SESSION ENTRY: option (a) is the cleanest — the meta population loop
+(~2010 and ~2347) plus the delay scan iterate cgraph->nodes[i] unconditionally;
+add a ggml_backend_buffer_is_meta(node->buffer) guard so foreign nodes pass
+through to their own (already-initialized) backends. The context backends fix
+(v2, committed) makes the scheduler side ready.
