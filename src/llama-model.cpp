@@ -1575,11 +1575,18 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         // [inverse-hybrid] recurrent (GDN) layers -> individual devices (layer-split semantics,
         // clean numerics); full-attention layers -> the Meta composite (tensor split, carries the
         // KV-heavy prefill load). Falls through to the default (the Meta) for non-recurrent.
-        if (!hybrid_gdn_devs.empty() && il < n_layer_all && hparams.is_recr(il)) {
-            // [inverse-hybrid] recurrent (GDN) layers -> CPU (the proven transition path from -ngl=4)
-            // TODO: switch to individual CUDA devices once the Meta->CUDA-individual data path is fixed
-            LLAMA_LOG_DEBUG("load_tensors: layer %3d (recurrent) -> CPU (hybrid safe path)\n", il);
-            return {cpu_dev, &pimpl->cpu_buft_list};
+        // [inverse-hybrid] In tensor mode with -ngl N, the LAST N layers go to the Meta composite
+        // (contiguous block — proven safe). Route the REMAINING layers to individual CUDA devices
+        // (layer-split semantics) instead of CPU for fast compute. One foreign→Meta transition,
+        // zero Meta→foreign transitions in the compute path. Bisection: 2 GDN + 1 FA on Meta = HIT.
+        if (!hybrid_gdn_devs.empty() && il < n_layer_all && il < i_gpu_start) {
+            ggml_backend_dev_t dev = hybrid_gdn_devs[il % hybrid_gdn_devs.size()];
+            LLAMA_LOG_DEBUG("load_tensors: layer %3d -> individual device %s (pre-Meta block)\n", il, ggml_backend_dev_name(dev));
+            return {dev, &pimpl->gpu_buft_list.at(dev)};
+        }
+        if (!hybrid_gdn_devs.empty() && il < n_layer_all && hparams.is_recr(il) && il >= i_gpu_start) {
+            // Recurrent layers within the Meta block: leave on Meta (the contiguous-block proof)
+            // Fall through to the default (Meta assignment)
         }
         const int layer_gpu = std::upper_bound(splits.begin(), splits.begin() + n_devices(), float(il - i_gpu_start)/act_gpu_layers) - splits.begin();
         auto * dev = devices.at(layer_gpu).dev;

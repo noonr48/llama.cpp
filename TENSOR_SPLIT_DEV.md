@@ -1011,3 +1011,28 @@ The mission's acceptance ("measured end-to-end improvement on long-prefill
 workloads vs single-mode layer") is PARTIALLY met by increment 1 (-ub 1024:
 372 vs 346 t/s = +7.5% at 100k, +25% at 16k). The full two-mode acceptance
 requires path 2.
+
+## CONTIGUOUS HYBRID BREAKTHROUGH 2026-09-07 13:05 — CORRECT but not faster
+
+The contiguous hybrid (layers 0-44 on individual CUDA round-robin, layers 45-48
+on the Meta composite as a contiguous block) achieves **HIT** — exact keyword
+recall with correct answers on the deterministic reproducer.
+
+PERFORMANCE COMPARISON (identical 4-device set = 5090 + 3x3090, 32k, censored):
+  Contiguous hybrid (-sm tensor, -ngl 4): 15.9s end-to-end (~102 t/s prefill) HIT
+  Layer mode (-sm layer, -ub 1024):         1.6s end-to-end (~1000 t/s)        HIT
+  Full tensor (-sm tensor, -ngl 999):       ~2.9s (~1045 t/s prefill)          MISS
+
+The contiguous hybrid is 10x SLOWER than layer mode on the same hardware.
+The slowness: layers 0-44 in layer-split across 4 devices (pipeline-sequential)
++ only 4 layers benefiting from the Meta's tensor parallelism. The Meta block
+is too small to provide a prefill advantage that offsets the pipeline cost.
+
+ARCHITECTURE VERDICT: the contiguous hybrid proves CORRECTNESS is achievable
+with contiguous Meta blocks + individual CUDA layers, but the performance
+doesn't beat layer mode. The full tensor mode's 2.4-3x prefill advantage
+requires MORE layers on the Meta, which requires fixing the GDN split
+corruption — the deep fork arc that remains open.
+
+The deployed -ub 1024 increment (+7.5% at 100k, +25% at 16k on the production
+lane) remains the only working prefill improvement.
