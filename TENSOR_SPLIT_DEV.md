@@ -1197,3 +1197,47 @@ crossing, input-wrapper shapes/strides, model/prompt marginality (CPU determinis
 
 ### Remaining work: full-tensor mode (NGL=99) hits a separate boot-time alloc assert;
 the true wrapper fix (keeping head-split attention for max prefill perf) is the follow-up.
+
+## OVERNIGHT OPTIMIZATION 2026-09-08 01:20-02:30 — THE DRAFT-CATCH-UP DISCOVERY
+
+### DEPLOYED WIN (commit 7aa82da server-resources): prefill +92%
+`--spec-type draft-mtp,ngram-map-k` (mtp n1 + ngram-map-k defaults): 25k cold prefill
+403→776 t/s (server-measured 32767ms/25423tok). ROOT CAUSE: the MTP draft's serial KV
+catch-up through the whole prompt (~30s at 25k) was hidden inside EVERY prefill
+measurement. ngram (draftless, higher drafting precedence per docs/speculative.md)
+wins the drafting rounds → the draft's prompt-length catch-up vanishes. The fast-mix
+pool's pure prefill at ub256 was ALWAYS ~776 t/s.
+
+### Complete lever map (all measured on the 7-GPU fast-mix, quality-gated):
+| Lever | Result | Verdict |
+|---|---|---|
+| mtp+ngram (deployed) | prefill +92%, decode 54-58 | ADOPTED |
+| MTP depth n2/n3 (with ngram) | 48.7-53.8 / 43.5-46.2 | DEAD (monotonic decrease, acceptance 1.0 — the serial draft steps on the P2P-bound pipeline don't amortize) |
+| ngram size_m 96/192 | no change | SATURATED at default 48 |
+| ngram-only (no mtp) | 52-53 | WORSE than combined |
+| CUDA graphs disabled A/B | -4-9% | graphs ACTIVE, worth little — the wall is elsewhere |
+| -ub 512 on fast-mix | OOM at 25k prefill | DEAD on this pool (5060Ti compute-buffer ceiling) |
+| 4-stream decode | 98 t/s aggregate (1.72x) | the multi-slot lever (needs -np>1 + concurrent requests) |
+
+### E1 calibration (the mechanism map):
+- 1-stream decode: SM 2.3% mem 1.5% — GPUs idle between launches
+- 4-stream: 1.72x scaling — LAUNCH/HOP-BOUND confirmed
+- 25k prefill: SM 7.9% — compute underutilized too
+- 100k cold prefill: 352 t/s (vs 776 at 25k) — attention-cost growth at length (intrinsic to the architecture; the QSA indexer bounds per-layer reads at 2048)
+
+### The decode wall (Pro consult #1, session noonr48, confirmed):
+Per-split CUDA graph capture WORKS on multi-GPU (the shape-keyed LRU handles MTP/ngram
+shape alternation: batch-1 and batch-8 get separate hot entries). The wall = the 7
+inter-split P2P hops per token (cudaMemcpyPeerAsync + event record + event wait,
+all OUTSIDE graph capture). Pipeline parallelism (4-copy rotation, llama-context.cpp:428+)
+helps multi-workload overlap, NOT single-stream decode. The 1-layer MTP CAN chain to
+n_max>1 (chain_heads=false doesn't clamp) but depth doesn't pay on this rig.
+
+### Lucebox map (researcher run 70fb0725):
+PFlash = LOSSY prefill (skipped spans never processed — violates quality musts);
+megakernel gains shrink at model size (their own README: chose 0.8B); KVFlash = KV
+paging (risks fp32-KV musts); DFlash/DSpark drafters already IN our fork but no
+FlashNext-trained drafter exists. Net: the portable lucebox wins were already ours.
+
+### Closed non-transfers: 27B-era n3-peak (rig-bound: dispatch tax), fast4 ngram +19%
+(doesn't transfer to 7-GPU: ngram-only measured 52-53 here).
