@@ -1568,21 +1568,20 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     const int act_gpu_layers = devices.empty() ? 0 : std::min(n_gpu_layers, n_layer_all + 1);
     auto get_layer_buft_list = [&](int il) -> llama_model::impl::layer_dev {
         const bool is_swa = il < n_layer_all && hparams.is_swa(il);
-        if (il < i_gpu_start || (il - i_gpu_start) >= act_gpu_layers) {
-            LLAMA_LOG_DEBUG("load_tensors: layer %3d assigned to device %s, is_swa = %d\n", il, ggml_backend_dev_name(cpu_dev), is_swa);
-            return {cpu_dev, &pimpl->cpu_buft_list};
-        }
-        // [inverse-hybrid] recurrent (GDN) layers -> individual devices (layer-split semantics,
-        // clean numerics); full-attention layers -> the Meta composite (tensor split, carries the
-        // KV-heavy prefill load). Falls through to the default (the Meta) for non-recurrent.
         // [inverse-hybrid] In tensor mode with -ngl N, the LAST N layers go to the Meta composite
         // (contiguous block — proven safe). Route the REMAINING layers to individual CUDA devices
         // (layer-split semantics) instead of CPU for fast compute. One foreign→Meta transition,
-        // zero Meta→foreign transitions in the compute path. Bisection: 2 GDN + 1 FA on Meta = HIT.
+        // zero Meta→foreign transitions in the compute path. MUST precede the CPU guard below:
+        // the guard's `il < i_gpu_start` predicate would otherwise return CPU first and this
+        // branch would be dead code (GPT Pro comprehension finding, confirmed 2026-09-07).
         if (!hybrid_gdn_devs.empty() && il < n_layer_all && il < i_gpu_start) {
             ggml_backend_dev_t dev = hybrid_gdn_devs[il % hybrid_gdn_devs.size()];
             LLAMA_LOG_DEBUG("load_tensors: layer %3d -> individual device %s (pre-Meta block)\n", il, ggml_backend_dev_name(dev));
             return {dev, &pimpl->gpu_buft_list.at(dev)};
+        }
+        if (il < i_gpu_start || (il - i_gpu_start) >= act_gpu_layers) {
+            LLAMA_LOG_DEBUG("load_tensors: layer %3d assigned to device %s, is_swa = %d\n", il, ggml_backend_dev_name(cpu_dev), is_swa);
+            return {cpu_dev, &pimpl->cpu_buft_list};
         }
         if (!hybrid_gdn_devs.empty() && il < n_layer_all && hparams.is_recr(il) && il >= i_gpu_start) {
             // Recurrent layers within the Meta block: leave on Meta (the contiguous-block proof)

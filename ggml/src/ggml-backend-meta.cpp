@@ -490,6 +490,25 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(co
 
 static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
         ggml_backend_meta_simple_tensor_container & stc, const struct ggml_tensor * tensor, bool assume_sync) {
+    // [inverse-hybrid] A tensor living on a FOREIGN (non-meta) buffer is a COMPLETE value on a
+    // single device (an individual-CUDA activation crossing into the Meta via the sched's
+    // boundary copy). From the Meta's distribution perspective it is MIRRORED: every consumer
+    // backend must receive the full value (the sched's copy replicates it). Walking the foreign
+    // device's subgraph algebra instead infers a split state, and the input copy then CHUNKS the
+    // activation across backends — token-chunk inputs feeding head-split weights produce
+    // content-dependent garbage. Root-caused 2026-09-07 via per-backend value dump: hc_norm-43
+    // (graph node 0, input from a foreign device) held four DIFFERENT values across backends
+    // while hc_norm-47 (on-Meta input chain) was byte-coherent — the MIRRORED invariant broken
+    // at the entry. This guard also keeps the meta-buffer context dereference below safe.
+    if (!ggml_backend_buffer_is_meta(tensor->buffer)) {
+        if (getenv("GGML_META_DUMP_KV")) {
+            static int fgn_count = 0;
+            if (fgn_count < 12) { fgn_count++;
+                fprintf(stderr, "[fgn] split-state query on FOREIGN tensor: op=%d name=%s -> MIRRORED\n",
+                        (int)tensor->op, tensor->name); }
+        }
+        return {GGML_BACKEND_SPLIT_AXIS_MIRRORED, {0}, {1}, 1};
+    }
     // FIXME Currently this function preserves/erases the information in n_segments and nr in an inconsistent way.
     // Since the operations in question are developed specifically for llama.cpp this currently does not manifest as a bug there.
     // However, in a broader ggml context with arbitrary ggml graphs this can lead to unexpected results.
@@ -946,7 +965,23 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
                 split_state = handle_generic(src_ss, /*scalar_only =*/ true);
             } break;
             case GGML_OP_CPY: {
-                split_state = handle_cpy(src_ss);
+                // [inverse-hybrid] A CPY whose source lives on a FOREIGN (non-meta) buffer is the
+                // sched's backend-boundary copy: it delivers the FULL activation from an
+                // individual device to the Meta. Its output must be MIRRORED — all backends
+                // hold the complete value (the CPY force-COMPUTE pass then makes every backend
+                // execute the copy). Without this, the split-state recursion walks the FOREIGN
+                // subgraph and propagates whatever distribution the algebra infers there
+                // (e.g. split-axis-0 from a weight-name match), poisoning the downstream
+                // algebra: split-input × split-weight MUL_MAT → PARTIAL → the attention output
+                // gets AllReduced (summed) across backends instead of keeping disjoint head
+                // slices — content-dependent garbage. Root-caused via value-stream dump
+                // 2026-09-07: FA43 attention output identical on all backends (summed) despite
+                // different per-backend Q slices; FA47 (on-Meta input) correctly differs.
+                if (tensor->src[0] != nullptr && !ggml_backend_buffer_is_meta(tensor->src[0]->buffer)) {
+                    split_state = {GGML_BACKEND_SPLIT_AXIS_MIRRORED, {0}, {1}, 1};
+                } else {
+                    split_state = handle_cpy(src_ss);
+                }
             } break;
             case GGML_OP_CONT:
             case GGML_OP_RESHAPE: {
@@ -1460,6 +1495,15 @@ static void ggml_backend_meta_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
     const size_t n_bufs = ggml_backend_meta_buffer_n_bufs(buffer);
     const ggml_backend_meta_split_state split_state = ggml_backend_meta_get_split_state(tensor, /*assume_sync =*/ false);
     GGML_ASSERT(ggml_is_contiguous(tensor) || split_state.axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED);
+    // [copy-probe] log every buffer-level copy entry for sched-created copy tensors only
+    // (weight loading would saturate any cap; sched copies are named Meta(...)#... / (reshaped))
+    {
+        static int n = 0;
+        if (getenv("GGML_META_DUMP_KV") && n < 60 &&
+            (strstr(tensor->name, "Meta(") || strstr(tensor->name, "(reshaped)"))) { n++;
+            fprintf(stderr, "[set-b] name=%s axis=%d offset=%zu size=%zu nbufs=%zu\n",
+                    tensor->name, (int)split_state.axis, offset, size, n_bufs); }
+    }
 
     if (split_state.n_segments != 1 || split_state.nr[0] != 1) {
         GGML_ASSERT(split_state.axis >= 0 && split_state.axis < GGML_MAX_DIMS);
@@ -1546,6 +1590,20 @@ static void ggml_backend_meta_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
             GGML_ASSERT(offset_j == chunk_size_full);
         } break;
         case GGML_BACKEND_SPLIT_AXIS_MIRRORED: {
+            // [copy-probe] print per-backend simple-tensor data pointers to compare against
+            // the graph wrappers' src pointers — if they differ, the copy wrote orphaned tensors
+            {
+                static int n = 0;
+                if (getenv("GGML_META_DUMP_KV") && n < 12 &&
+                    (strstr(tensor->name, "Meta(") || strstr(tensor->name, "(reshaped)"))) { n++;
+                    fprintf(stderr, "[set-b-mir] name=%s size=%zu host_f0=%g ptrs:", tensor->name, size,
+                            size >= 4 ? ((const float*)data)[0] : 0.0f);
+                    for (size_t j = 0; j < n_bufs && j < 4; j++) {
+                        ggml_tensor * st = ggml_backend_meta_buffer_simple_tensor(tensor, j);
+                        fprintf(stderr, " b%zu=%p", j, st ? st->data : nullptr);
+                    }
+                    fprintf(stderr, "\n"); }
+            }
             for (size_t j = 0; j < n_bufs; j++) {
                 ggml_tensor * simple_tensor = ggml_backend_meta_buffer_simple_tensor(tensor, j);
                 ggml_backend_tensor_set(simple_tensor, data, offset, size);
@@ -1925,6 +1983,14 @@ static void ggml_backend_meta_free(ggml_backend_t backend) {
 }
 
 static void ggml_backend_meta_set_tensor_async(ggml_backend_t backend, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+    // [copy-probe] log every backend-level copy entry
+    {
+        static int n = 0;
+        if (getenv("GGML_META_DUMP_KV") && n < 40) { n++;
+            const auto ss0 = ggml_backend_meta_get_split_state(tensor, false);
+            fprintf(stderr, "[set-a] name=%s axis=%d offset=%zu size=%zu\n",
+                    tensor->name, (int)ss0.axis, offset, size); }
+    }
     const size_t n_backends = ggml_backend_meta_n_backends(backend);
     GGML_ASSERT(offset == 0);
     GGML_ASSERT(ggml_is_contiguous(tensor));
@@ -2097,6 +2163,28 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
             }
         }
         t_rb_t2 = std::chrono::steady_clock::now(); // [tsplit-dev] Phase B end: node population
+
+        // [copy-probe] population-time input check: node 0's per-backend src[0] first float
+        // BEFORE any kernel runs. If identical across backends here but divergent at end of
+        // compute, the corruption happens during compute execution (allocator region reuse).
+        {
+            static int n = 0;
+            if (getenv("GGML_META_DUMP_KV") && n < 4 && cgraph->n_nodes > 0) { n++;
+                fprintf(stderr, "[pop] n0-src0:");
+                for (size_t j = 0; j < n_backends && j < 4; j++) {
+                    auto & bcj = backend_ctx->backend_configs[j];
+                    ggml_tensor * w = (bcj.nodes.size() > 0) ? bcj.nodes[0] : nullptr;
+                    float v = 0.0f;
+                    if (w && w->src[0] && ggml_nbytes(w->src[0]) >= 16) {
+                        static std::vector<uint8_t> pb; pb.resize(64);
+                        ggml_backend_synchronize(bcj.backend);
+                        ggml_backend_tensor_get(w->src[0], pb.data(), 0, 64);
+                        v = ((float*)pb.data())[0];
+                    }
+                    fprintf(stderr, " b%zu=%g", j, v);
+                }
+                fprintf(stderr, "\n"); }
+        }
 
         // [inverse-hybrid] CPY-to-MIRRORED fix: the sched inserts CPY nodes at backend split
         // boundaries (e.g. CUDA-individual → Meta). The CPY's output is MIRRORED (all backends
@@ -2298,7 +2386,11 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                     continue;
                 }
 
-                const int i_delayed = get_i_delayed(i);
+                // [tsplit-dev] GGML_META_NO_DELAY=1 disables AllReduce delay entirely — every
+                // PARTIAL boundary reduces immediately. Diagnostic for the delay-through-GDN-states
+                // corruption hypothesis: if NGL=6 passes with delay disabled, the delay scan is
+                // deferring a reduction across a nonlinear (state-update) op.
+                const int i_delayed = getenv("GGML_META_NO_DELAY") ? i : get_i_delayed(i);
 
                 // [inverse-hybrid] Cap the delay at the first foreign-buffer node — the AllReduce
                 // must complete before any foreign consumer reads the partial output
@@ -2613,6 +2705,146 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
             }
         }
     }
+
+    // [tsplit-dev] KV mirror checksum dump (H2/H12 discriminator): at end of compute, checksum
+    // each FLASH_ATTN_EXT node's K (src[1]) and V (src[2]) source views per backend. Mirrored KV
+    // caches must be byte-identical across backends; divergence localizes the corruption to a
+    // specific cache write path. Gated by GGML_META_DUMP_KV, first 6 computes only.
+    // EXTENDED: full mirrored-invariant audit — checksum EVERY node whose post-sync split state
+    // is MIRRORED across all backends; report ONLY divergent nodes (stale mirror / incomplete
+    // AllReduce). This catches activation-level incoherence the cache dump cannot see.
+    {
+        static int kv_dump_count = 0;
+        if (getenv("GGML_META_DUMP_KV") && kv_dump_count < 6) {
+            kv_dump_count++;
+            // [n0] Node-0 entry diagnostic: the first node's source chain (buffer type, state,
+            // per-backend wrapper shapes + values) and per-backend COMPUTE flags.
+            if (kv_dump_count == 1 && cgraph->n_nodes > 0) {
+                for (int probe = 0; probe < 3 && probe < cgraph->n_nodes; probe++) {
+                    ggml_tensor * n0 = cgraph->nodes[probe];
+                    fprintf(stderr, "[n0] node=%d op=%d name=%s\n", probe, (int)n0->op, n0->name);
+                    for (int s = 0; s < 2; s++) {
+                        ggml_tensor * src = n0->src[s];
+                        if (!src) continue;
+                        bool fgn = !ggml_backend_buffer_is_meta(src->buffer);
+                        const auto sss = ggml_backend_meta_get_split_state(src, false);
+                        fprintf(stderr, "[n0]   src[%d]: op=%d name=%s foreign=%d axis=%d nb=%zu\n",
+                                s, (int)src->op, src->name, (int)fgn, (int)sss.axis, ggml_nbytes(src));
+                    }
+                    for (size_t j = 0; j < n_backends; j++) {
+                        auto & bcj = backend_ctx->backend_configs[j];
+                        ggml_tensor * w = (bcj.nodes.size() > (size_t)probe) ? bcj.nodes[probe] : nullptr;
+                        if (!w) { fprintf(stderr, "[n0]   backend %zu: NO WRAPPER\n", j); continue; }
+                        bool comp = w->flags & GGML_TENSOR_FLAG_COMPUTE;
+                        size_t nbw = ggml_nbytes(w);
+                        float f0v = 0.0f;
+                        if (nbw >= 16) {
+                            static std::vector<uint8_t> b0; b0.resize(std::min(nbw,(size_t)256));
+                            ggml_backend_synchronize(bcj.backend);
+                            ggml_backend_tensor_get(w, b0.data(), 0, b0.size());
+                            f0v = ((float*)b0.data())[0];
+                        }
+                        float s0f = 0.0f, s1f = 0.0f;
+                        if (w->src[0] && ggml_nbytes(w->src[0]) >= 16) {
+                            static std::vector<uint8_t> b1v; b1v.resize(64);
+                            ggml_backend_tensor_get(w->src[0], b1v.data(), 0, 64);
+                            s0f = ((float*)b1v.data())[0];
+                        }
+                        if (w->src[1] && ggml_nbytes(w->src[1]) >= 16) {
+                            static std::vector<uint8_t> b2v; b2v.resize(64);
+                            ggml_backend_tensor_get(w->src[1], b2v.data(), 0, 64);
+                            s1f = ((float*)b2v.data())[0];
+                        }
+                        fprintf(stderr, "[n0]   backend %zu: COMPUTE=%d nbj=%zu f0=%g src0_nbj=%zu s0f=%g s1f=%g src0_ptr=%p\n",
+                                j, (int)comp, nbw, f0v,
+                                (w->src[0] ? ggml_nbytes(w->src[0]) : 0), s0f, s1f,
+                                w->src[0] ? (void*)w->src[0]->data : nullptr);
+                    }
+                }
+            }
+            size_t n_mirrored = 0, n_divergent = 0;
+            for (int i = 0; i < cgraph->n_nodes; i++) {
+                ggml_tensor * node = cgraph->nodes[i];
+                bool dump_this = false;
+                const char * tag = "";
+                if (node->op == GGML_OP_FLASH_ATTN_EXT) { dump_this = true; tag = "FA"; }
+                else if (ggml_nbytes(node) >= 64) {
+                    const auto ss = ggml_backend_meta_get_split_state(node, /*assume_sync=*/false);
+                    dump_this = true; tag = ss.axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED ? "MIR" : "ANY";
+                    if (ss.axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) n_mirrored++;
+                }
+                if (!dump_this) continue;
+                uint64_t hashes[64]; bool have[64] = {false};
+                size_t nb_eff = 0;
+                for (size_t j = 0; j < n_backends && j < 64; j++) {
+                    auto & bcj = backend_ctx->backend_configs[j];
+                    ggml_tensor * w = (bcj.nodes.size() > (size_t)i) ? bcj.nodes[i] : nullptr;
+                    if (!w) continue;
+                    size_t chk = std::min(ggml_nbytes(w), (size_t)1024*1024);
+                    static std::vector<uint8_t> kvbuf; kvbuf.resize(chk);
+                    ggml_backend_synchronize(bcj.backend);
+                    ggml_backend_tensor_get(w, kvbuf.data(), 0, chk);
+                    uint64_t h = 1469598103934665603ULL;
+                    for (size_t b = 0; b < chk; b++) { h ^= kvbuf[b]; h *= 1099511628211ULL; }
+                    hashes[j] = h; have[j] = true; nb_eff = chk;
+                }
+                bool diverged = false;
+                uint64_t ref = 0; bool ref_set = false;
+                for (size_t j = 0; j < n_backends && j < 64; j++) {
+                    if (!have[j]) continue;
+                    if (!ref_set) { ref = hashes[j]; ref_set = true; continue; }
+                    if (hashes[j] != ref) { diverged = true; break; }
+                }
+                if (node->op == GGML_OP_FLASH_ATTN_EXT || diverged) {
+                    if (diverged) n_divergent++;
+                    const auto ss_self = ggml_backend_meta_get_split_state(node, /*assume_sync=*/false);
+                    fprintf(stderr, "[inv] compute=%d node=%d %s op=%d axis=%d name=%s nb=%zu%s\n",
+                            kv_dump_count, i, tag, (int)node->op, (int)ss_self.axis, node->name, nb_eff,
+                            diverged ? " DIVERGENT" : "");
+                    if (node->op == GGML_OP_FLASH_ATTN_EXT) {
+                        for (int s = 0; s <= 3; s++) {
+                            if (!node->src[s]) continue;
+                            const auto sss = ggml_backend_meta_get_split_state(node->src[s], /*assume_sync=*/false);
+                            const bool src_foreign = !ggml_backend_buffer_is_meta(node->src[s]->buffer);
+                            fprintf(stderr, "[inv]   FA src[%d]: axis=%d foreign=%d name=%s\n",
+                                    s, (int)sss.axis, (int)src_foreign, node->src[s]->name);
+                        }
+                    }
+                    for (size_t j = 0; j < n_backends && j < 64; j++) {
+                        if (!have[j]) continue;
+                        fprintf(stderr, "[inv]   backend %zu: chk=%016llx%s\n", j,
+                                (unsigned long long)hashes[j], hashes[j] != ref ? " <-- DIFFERS" : "");
+                    }
+                }
+                // [val] per-backend value probe for cross-CONFIG alignment: L2 of first 4096
+                // floats + leading floats. Compare NGL=5 vs NGL=6 streams at shared node names.
+                {
+                    ggml_tensor * w0 = (n_backends > 0 && backend_ctx->backend_configs[0].nodes.size() > (size_t)i) ? backend_ctx->backend_configs[0].nodes[i] : nullptr;
+                    if (w0 && ggml_nbytes(w0) >= 16) {
+                        for (size_t j = 0; j < n_backends; j++) {
+                            auto & bcj = backend_ctx->backend_configs[j];
+                            ggml_tensor * w = (bcj.nodes.size() > (size_t)i) ? bcj.nodes[i] : nullptr;
+                            if (!w || ggml_nbytes(w) < 16) continue;
+                            size_t chkj = std::min(ggml_nbytes(w), (size_t)16384); // per-BACKEND size: split wrappers differ
+                            static std::vector<uint8_t> vbuf; vbuf.resize(chkj);
+                            ggml_backend_synchronize(bcj.backend);
+                            ggml_backend_tensor_get(w, vbuf.data(), 0, chkj);
+                            size_t nf = chkj / 4;
+                            float l2 = 0.0f;
+                            for (size_t f = 0; f < nf; f++) { float v = ((float*)vbuf.data())[f]; l2 += v*v; }
+                            float f0 = ((float*)vbuf.data())[0];
+                            float f1 = nf > 1 ? ((float*)vbuf.data())[1] : 0.0f;
+                            fprintf(stderr, "[val] compute=%d node=%d %s op=%d name=%s b%zu l2=%.6g f0=%.6g f1=%.6g nb=%zu nbj=%zu ptr=%p\n",
+                                    kv_dump_count, i, tag, (int)node->op, node->name, j, l2, f0, f1, ggml_nbytes(node), ggml_nbytes(w), w->data);
+                        }
+                    }
+                }
+            }
+            fprintf(stderr, "[inv] compute=%d summary: %zu mirrored nodes checked, %zu DIVERGENT\n",
+                    kv_dump_count, n_mirrored, n_divergent);
+        }
+    }
+
     return GGML_STATUS_SUCCESS;
 }
 
