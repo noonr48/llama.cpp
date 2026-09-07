@@ -791,3 +791,25 @@ decode (generation) graph — Release build, no line info (addr2line resolves
 the function only). Fix entry: rebuild with -DCMAKE_BUILD_TYPE=RelWithDebInfo,
 reproduce once, get the exact line; the crash is in the meta compute's handling
 of a node whose backend set spans CPU+meta at decode-time graph shapes.
+
+## EXACT CRASH LINE 2026-09-07 11:10 — the mixed-boundary bug localized
+
+RelWithDebInfo rebuild + one repro: addr2line resolves the segfault to
+ggml-backend-meta.cpp:2353 — the subgraph-population loop:
+  cgraph_ij->n_nodes = i_node_stop - i_node_start;
+(the cgraph_ij = bcj.cgraphs[i_graph].cgraph_main assignment region).
+MECHANISM HYPOTHESIS: with -ngl 24 (layers 0-23 meta, 24-47 CPU), the
+scheduler hands the meta backend a graph containing CPU-layer nodes; the
+meta's rebuild loop iterates them but bcj.cgraphs[i_graph].cgraph_main is
+null/unallocated for those (or bcj.nodes[i_node] was never populated — the
+meta simple-tensor wrapper only exists for meta-buffered tensors). The meta
+graph_compute lacks mixed-backend node handling at decode-time shapes
+(prefill shapes happened to work).
+
+FIX (next session): in ggml_backend_meta_graph_compute's rebuild path, skip
+or properly route nodes whose buffers are not meta-owned (check
+ggml_backend_buffer_is_meta(node->buffer) in the population loop; nodes on
+foreign backends belong to a different sched split and must not enter the
+meta's per-backend subgraphs). Then the -ngl bisection unblocks. The debug
+build lives at build-tsplit-dbg/ (do not overwrite; the production unit
+references build-tsplit/).
