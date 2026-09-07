@@ -1089,3 +1089,32 @@ Meta (amortizing the overhead across the full model).
 The mission's next session should focus on (c) — the GDN corruption fix —
 as it addresses both correctness (the recall gate) and performance (the
 amortization). The optimization (b) is a secondary target.
+
+## NGL 5/6 BISECTION 2026-09-07 13:25 — the corruption threshold refined
+
+NGL=5 (layers 44-48 on Meta: 3 GDN + 1 FA + output): **HIT** (exact recall!)
+NGL=6 (layers 43-48 on Meta: 3 GDN + 2 FA + output): **MISS** (degenerate)
+
+The corruption threshold is NOT purely GDN count. Same GDN count (3), different
+FA count: 1 FA = clean, 2 FA = corrupted. The SECOND full-attn layer on the
+Meta composite triggers the failure.
+
+HYPOTHESIS: the input to FA43 (from GDN42 on an individual CUDA device)
+crosses to the Meta via the sched's copy. The Meta's virtual buffer must
+replicate the input to ALL 4 simple backends (for both split Q and mirrored
+K/V projections). If the copy only reaches one backend, the other backends
+compute garbage for the K/V projections → corrupted KV cache → attention
+failure. With only 1 FA layer (NGL=4/5), the input comes from within the
+Meta block (no foreign transition) or from the embedding (properly replicated).
+
+THE REFINED CORRUPTION MODEL:
+- GDN layers on Meta: clean up to 3 (NGL=5 HIT)
+- FA layers on Meta: clean for 1, corrupt for 2+
+- The corruption is in the FOREIGN→META transition for FA layers specifically
+  (the sched copy to the Meta's virtual buffer for K/V projection inputs)
+
+NEXT SESSION ENTRY: instrument the Meta's set_tensor/get_tensor for the
+FA43 input in NGL=6 — verify all 4 backends receive the correct input.
+If the copy only reaches one backend, the fix is in the Meta's buffer
+set_tensor implementation (replicating writes to all simple backends for
+foreign inputs).
