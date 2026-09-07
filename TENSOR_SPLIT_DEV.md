@@ -1036,3 +1036,27 @@ corruption — the deep fork arc that remains open.
 
 The deployed -ub 1024 increment (+7.5% at 100k, +25% at 16k on the production
 lane) remains the only working prefill improvement.
+
+## PREFILL VARIANCE AUDIT 2026-09-07 13:10 — the -ub 1024 improvement is uncertain
+
+Live production lane measurements (identical 108,800-token prompt, same lane):
+  Morning (baseline -ub 512):  314.9s = 346 t/s
+  Morning (after -ub 1024):    292.8s = 372 t/s
+  Now (with -ub 1024):         338.9s = 321 t/s
+
+The -ub 1024 spread (321-372) overlaps the baseline (346). The improvement
+may be noise from system state (hours of GPU cycling, thermal, memory state).
+More repetitions needed for a reliable average; single measurements are not
+conclusive at this variance level.
+
+MISSION ACCEPTANCE AUDIT:
+- 'measured end-to-end improvement on long-prefill workloads vs single-mode
+  layer': UNCERTAIN (the -ub 1024 delta is within measurement variance)
+- The contiguous hybrid: CORRECTNESS proven (HIT) but 10x slower than layer
+- The full tensor mode: 2.4-3x prefill advantage but recall fails
+- The GDN corruption fix: the gate for any real two-mode performance win
+
+HONEST VERDICT: the mission's performance acceptance is NOT yet met with
+confidence. The correctness architecture is proven (contiguous hybrid). The
+next session needs either (a) repeated prefill measurements to establish the
+-ub 1024 effect, or (b) the GDN corruption fix to unlock the tensor prefill.
