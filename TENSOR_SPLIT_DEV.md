@@ -729,3 +729,23 @@ Suspect order: (1) the GDN recurrent-state path under degenerate content
 statistics (gibberish/word-salad = rank-deficient state regimes), (2) the
 indexer compute split, (3) an assume-sync PARTIAL masquerade that is
 content-gated via graph-shape variation.
+
+## COMPLETION PROBE 2026-09-07 10:50 — the bug is GLOBAL-context, local modeling intact
+
+Plain-text completion of the gibberish prefix (no chat template, temp 0):
+  LAYER : '\n\n<think>\n\n</think>\n\nBased on the analysis of the provided'
+          (breaks out of gibberish into document-structured response — uses the
+           global context: the 'Study notes' wrapper, the document framing)
+  TENSOR: 'axzaxz xaxz jkkz jax'
+          (correctly pattern-continues the LOCAL letter statistics!)
+
+SYNTHESIS: the tensor path's LOCAL language modeling works (it learned and
+continues the local pattern — that's good modeling of random letters). What is
+lost: the LONG-RANGE/global context integration — the document structure, the
+keyword, the question. The model can pattern-match locally but cannot perform
+global retrieval. In this architecture the global context is carried by the 36
+GDN (linear attention) recurrent states; the local pattern work lives in the
+conv/full-attn paths (mirrored, intact). PRIME SUSPECT CONFIRMED-sharpened:
+the GDN recurrent-state split path corrupts global context integration while
+leaving local statistics intact. The per-layer instrumentation arc should dump
+the GDN state norms per layer in both modes on /tmp/repro-1p5k.txt.
