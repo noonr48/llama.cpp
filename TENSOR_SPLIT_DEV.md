@@ -934,3 +934,26 @@ v5 analysis — now confirmed by a working boot with wrong results.
 Session end state: 8 commits today (7ba4...→V6 pending), increment 1 deployed,
 segfault fixed, bisection complete, inverse hybrid v1-v6 arc documented with
 the exact remaining gap named.
+
+## SCHED DEBUG 2026-09-07 12:20 — routing WORKS; the gap is the activation transition
+
+GGML_SCHED_DEBUG boot: 'graph splits = 51' — the scheduler IS splitting the
+graph across the 5 backends (Meta + 4 individuals). The GDN ops ARE assigned
+to their own backends; the full-attn ops to the Meta. The routing machinery
+(loader + context backends + sched assignment) is COMPLETE AND WORKING.
+
+The recall failure's mechanism: the Meta's full-attn layer outputs are
+axis-0 PARTIAL tensors (split across 4 simple backends, needing AllReduce).
+Within the Meta, the next Meta-layer handles partials via the split-state
+propagation. But at a Meta→individual boundary, the sched's copy mechanism
+transfers the raw tensor — and the Meta's PARTIAL output crosses unreduced.
+The GDN layer on CUDA0 receives partial activations instead of the full
+residual stream → corrupted computation → the refusal pattern.
+
+THE PRECISE FIX (next session): ensure the Meta's subgraph terminates each
+full-attn layer's computation with a reduction (AllReduce) before the output
+crosses to a foreign backend. Implementation: in the delay scan / subgraph
+partitioning, when the successor of a PARTIAL-output node is a foreign-buffer
+node, force the reduction boundary there (don't delay past it). The
+get_i_delayed machinery already handles this for MoE partials — extend it to
+respect foreign-backend boundaries. This is a focused, well-scoped change.
