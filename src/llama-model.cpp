@@ -1505,8 +1505,13 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     // composite is not registered), so every GPU-type device here is an individual.
     std::vector<ggml_backend_dev_t> hybrid_gdn_devs;
     if (split_mode == LLAMA_SPLIT_MODE_TENSOR && !devices.empty()) {
+        fprintf(stderr, "[inverse-hybrid] registry scan: dev_count=%zu, buft_list_size=%zu, devices_size=%zu\n",
+                (size_t)ggml_backend_dev_count(), pimpl->gpu_buft_list.size(), devices.size());
         for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
             ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            fprintf(stderr, "[inverse-hybrid]   registry[%zu]: name=%s type=%d in_buft_list=%s\n",
+                    i, ggml_backend_dev_name(dev), (int)ggml_backend_dev_type(dev),
+                    pimpl->gpu_buft_list.find(dev) != pimpl->gpu_buft_list.end() ? "yes" : "no");
             if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU
                     && pimpl->gpu_buft_list.find(dev) == pimpl->gpu_buft_list.end()) {
                 buft_list_t bl = make_gpu_buft_list(dev, LLAMA_SPLIT_MODE_LAYER, nullptr);
@@ -1571,9 +1576,10 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         // clean numerics); full-attention layers -> the Meta composite (tensor split, carries the
         // KV-heavy prefill load). Falls through to the default (the Meta) for non-recurrent.
         if (!hybrid_gdn_devs.empty() && il < n_layer_all && hparams.is_recr(il)) {
-            ggml_backend_dev_t dev = hybrid_gdn_devs[il % hybrid_gdn_devs.size()];
-            LLAMA_LOG_DEBUG("load_tensors: layer %3d (recurrent) -> individual device %s\n", il, ggml_backend_dev_name(dev));
-            return {dev, &pimpl->gpu_buft_list.at(dev)};
+            // [inverse-hybrid] recurrent (GDN) layers -> CPU (the proven transition path from -ngl=4)
+            // TODO: switch to individual CUDA devices once the Meta->CUDA-individual data path is fixed
+            LLAMA_LOG_DEBUG("load_tensors: layer %3d (recurrent) -> CPU (hybrid safe path)\n", il);
+            return {cpu_dev, &pimpl->cpu_buft_list};
         }
         const int layer_gpu = std::upper_bound(splits.begin(), splits.begin() + n_devices(), float(il - i_gpu_start)/act_gpu_layers) - splits.begin();
         auto * dev = devices.at(layer_gpu).dev;

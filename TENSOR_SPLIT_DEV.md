@@ -982,3 +982,32 @@ SESSION SUMMARY 2026-09-07 (the two-mode-lane day):
   (51) ✓, guards ✓, boundary approach started; remaining = correct subgraph
   construction at foreign boundaries (the activation transition)
 - 15 commits pushed today (tip pending V7)
+
+## DEFINITIVE DIAGNOSIS 2026-09-07 13:00 — the interleaving is the killer
+
+Registry diagnostic proves the routing FIRES (CUDA0-3 found, type=GPU, added;
+the LLAMA_LOG_INFO 'active' line is just filtered by the server logger).
+Prefill speed confirms: hybrid CPU-GDN ~76 t/s (between all-CPU ~38 and
+all-Meta ~1045) = the routing works, GDN layers ARE on CPU.
+
+THE FINDING: the inverse hybrid (full-attn on Meta, GDN on CPU, interleaved)
+fails recall even with correct routing because 12 ISOLATED 1-layer Meta blocks
+create 12 Meta→foreign transitions. Each transition risks partial-output
+corruption; they compound. The -ngl=4 proof (1 contiguous 4-layer Meta block
+= 1 transition) works. NGL=7 (7-layer contiguous block with 3 extra GDN
+layers) also fails — but from GDN corruption, not transitions.
+
+THE ARCHITECTURE CONCLUSION: interleaved per-layer-type split is dead on this
+fork without guaranteed-reduced transitions. The viable paths:
+1. CONTIGUOUS blocks: the first N layers on Meta (proven: NGL=4 works) —
+   but this doesn't selectively target full-attn layers.
+2. Fix the Meta's buffer get/set for partial tensors at foreign transitions
+   (the deep sched/buffer integration — a focused multi-day fork arc).
+3. Accept the deployed increment (-ub 1024) as the prefill improvement and
+   defer the two-mode architecture until the Meta's foreign-transition
+   semantics are production-grade.
+
+The mission's acceptance ("measured end-to-end improvement on long-prefill
+workloads vs single-mode layer") is PARTIALLY met by increment 1 (-ub 1024:
+372 vs 346 t/s = +7.5% at 100k, +25% at 16k). The full two-mode acceptance
+requires path 2.
