@@ -813,3 +813,29 @@ foreign backends belong to a different sched split and must not enter the
 meta's per-backend subgraphs). Then the -ngl bisection unblocks. The debug
 build lives at build-tsplit-dbg/ (do not overwrite; the production unit
 references build-tsplit/).
+
+## BISECTION RESULT 2026-09-07 11:35 — THE GDN SPLIT IS THE CORRUPTION; FULL-ATTN IS CLEAN
+
+With the needs_rebuild-forced allocation fix (the mixed-boundary segfault is FIXED —
+commit pending), the -ngl bisection ran on the deterministic reproducer:
+  NGL=4  (GDN 0,1,2 + full-attn 3 split):      HIT  — exact 'MAPLE-SYRUP-7461'
+  NGL=7  (+ GDN 4,5,6 — NO new full-attn):     MISS — 'RZAWZ' degenerate
+  NGL=8  (+ full-attn 7):                      MISS
+  NGL=12 (GDN 0-11 + fa 3,7,11):               MISS
+  NGL=24:                                      MISS (engagement, no keyword)
+  NGL=999 (all):                               MISS (refusal pattern)
+
+CONCLUSION: the corruption is in the GDN (linear-attention) layers' tensor split
+and COMPOUNDS per layer — ~3 split GDN layers stay within recall tolerance, >=4-6
+break it deterministically. Full-attn layer 3's split (mirrored KV + K/V-proj +
+Q split) is CLEAN. This explains the completion probe (local statistics intact,
+global context corrupted): the GDN recurrent states ARE the global-context
+carriers, and their per-device split loses cross-head/global information
+accumulatively.
+
+ARCHITECTURE IMPLICATION (inverts the earlier hybrid guess): tensor-split the
+12 FULL-ATTN layers (clean, carry the KV-cache = the heaviest prefill load) and
+layer-split the 36 GDN layers. That is the inverse composition — full-attn on a
+Meta composite, GDN on individual devices — via get_layer_buft_list routing.
+NEXT ARC: implement the full-attn-only tensor split; measure prefill gain
+(full-attn KV work parallelized) with guaranteed-clean GDN path.

@@ -2315,7 +2315,11 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
             backend_ctx->max_tmp_size = max_tmp_size;
         }
 
-        if (max_nnodes_raised || n_subgraphs > backend_ctx->max_subgraphs) {
+        if (needs_rebuild || max_nnodes_raised || n_subgraphs > backend_ctx->max_subgraphs) {
+            // [tsplit-dev] mixed-boundary fix: always re-allocate subgraph storage on rebuild.
+            // gdb on the -ngl segfault showed cgraph_main entries pointing into freed mmap
+            // memory (stale from an earlier ctx lifetime) while the live ctx allocates at a
+            // different address. Re-allocating on every rebuild guarantees fresh pointers.
             backend_ctx->max_subgraphs = std::max(backend_ctx->max_subgraphs, n_subgraphs);
             const size_t n_nodes_per_device = 3 * backend_ctx->n_reduce_steps; // tmp + ADD (+zeroing) graph per step and device
             const size_t n_cgraphs_per_device = 2 * backend_ctx->n_reduce_steps; // ADD ( + zeroing) graph per step and device
@@ -2348,6 +2352,15 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
             auto & bcj = backend_ctx->backend_configs[j];
             for (size_t i_graph = 0; i_graph < n_subgraphs; i_graph++) {
                 ggml_cgraph * cgraph_ij = bcj.cgraphs[i_graph].cgraph_main;
+                // [tsplit-dev] mixed-boundary guard: shape transitions (e.g. prefill->decode with
+                // mixed CPU/meta layer placement) can reach population with stale/null cgraph_main
+                // entries (the allocation block at ~2314 only re-runs when the subgraph count grows
+                // past the historical max). Allocate on demand instead of crashing.
+                if (cgraph_ij == nullptr) {
+                    bcj.cgraphs[i_graph].cgraph_main = ggml_new_graph_custom(backend_ctx->ctx.get(), cgraph->n_nodes, /*grads =*/ false);
+                    cgraph_ij = bcj.cgraphs[i_graph].cgraph_main;
+                    GGML_LOG_INFO("meta: on-demand subgraph alloc j=%zu i_graph=%zu\n", j, i_graph);
+                }
                 const size_t i_node_start = bcj.cgraphs[i_graph].offset;
                 const size_t i_node_stop = i_graph + 1 < n_subgraphs ? bcj.cgraphs[i_graph + 1].offset : cgraph->n_nodes;
                 cgraph_ij->n_nodes = i_node_stop - i_node_start;
