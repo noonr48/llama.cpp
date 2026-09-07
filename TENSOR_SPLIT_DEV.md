@@ -839,3 +839,23 @@ layer-split the 36 GDN layers. That is the inverse composition — full-attn on 
 Meta composite, GDN on individual devices — via get_layer_buft_list routing.
 NEXT ARC: implement the full-attn-only tensor split; measure prefill gain
 (full-attn KV work parallelized) with guaranteed-clean GDN path.
+
+## INVERSE HYBRID -OT ATTEMPT 2026-09-07 11:42 — the scheduler op-compatibility wall
+
+The command-line route (full-attn on Meta + GDN layers -ot to CUDA0-2 round-robin,
+weights + cache_[rs] routed together, comma-separated -ot per the help) reaches
+model load but aborts at ggml-backend.cpp:941:
+  "pre-allocated tensor in a buffer that cannot run the operation"
+The GDN ops (conv/ssm/gated-delta) with tensors on individual CUDA buffers while
+their src/activation tensors flow through the Meta composite hit the scheduler's
+backend-op compatibility validation. A -ot flag route CANNOT express the hybrid.
+
+THE REMAINING IMPLEMENTATION (fork-level, next session): per-layer-type split
+routing in the loader — get_layer_buft_list (llama-model.cpp:1471) assigns each
+layer's buft list from the device list; extend llama_prepare_model_devices
+(llama.cpp:165+) so TENSOR mode ALSO registers the individual devices alongside
+the Meta composite, then route by hparams.is_recr(il): GDN layers -> individual
+device bufts (layer-split semantics), full-attn layers -> the Meta buft (tensor
+split, clean per the bisection). The graph/scheduler handles mixed backends
+per-op (the needs_rebuild alloc fix already cleared the mixed-boundary crash).
+Estimated: one focused session (loader change + boot + needle + perf ladder).
