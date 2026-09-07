@@ -505,6 +505,16 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
 
         // standard attention
         if (std::regex_match(tensor_name, pattern_q_weight) || std::regex_match(tensor_name, pattern_kv_weight)) {
+            // [fa-fix] GGML_META_MIRROR_WQ=1 — mirror the Q projection. The interleaved
+            // [Q|gate] wq output makes the per-backend strided-view extraction the suspected
+            // corruption site (K/V proven correct, attn_output proven wrong → the query-side
+            // path). Mirroring wq lets every backend compute the full projection locally and
+            // extract Q/gate with plain views — trivially correct. wo stays split: mirrored
+            // gated × split wo → partial → AllReduce (unchanged, correct). Attention becomes
+            // 4× redundant FLOPs — a validation bisect, not the final perf config.
+            if (std::regex_match(tensor_name, pattern_q_weight) && getenv("GGML_META_MIRROR_WQ")) {
+                return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_MIRRORED);
+            }
             // [tsplit-dev] crash-site-6 fix (from GPT Pro consult, session 2026-09-07):
             // when the layer's KV head count cannot cover all devices, MIRROR the K/V
             // projections alongside their already-mirrored caches — Meta algebra gives
@@ -542,6 +552,13 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_0, "attn_output.weight");
         }
         if (std::regex_match(tensor_name, pattern_attn_out_weight)) {
+            // [fa-fix] GGML_META_MIRROR_WQ also mirrors wo: with wq mirrored, attn_gated
+            // becomes MIRRORED and wo(AXIS_0) x MIRRORED is an unsupported MUL_MAT combo
+            // (aborts). Mirroring both makes the FA block redundantly-but-correctly computed
+            // on every backend: full attention each backend (identical), MIR x MIR -> MIR.
+            if (getenv("GGML_META_MIRROR_WQ")) {
+                return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_MIRRORED);
+            }
             return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_0);
         }
         if (std::regex_match(tensor_name, pattern_attn_out_bias)) {
@@ -1568,6 +1585,42 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     const int act_gpu_layers = devices.empty() ? 0 : std::min(n_gpu_layers, n_layer_all + 1);
     auto get_layer_buft_list = [&](int il) -> llama_model::impl::layer_dev {
         const bool is_swa = il < n_layer_all && hparams.is_swa(il);
+        // [fa-meta] GGML_META_LAYERS="3,7,..." — selective routing: ONLY the listed layers
+        // (plus the output layer) go to the Meta composite; every other layer routes to
+        // individual CUDA devices round-robin. Discriminates "2 FA layers coexisting on Meta"
+        // from "FA block followed by on-Meta GDNs"; if FA-only-on-Meta passes, it IS the
+        // two-mode architecture (FAs tensor-split for prefill, GDNs layer-split for decode).
+        static const std::vector<int> meta_only_layers = []() {
+            std::vector<int> v;
+            if (const char * e = getenv("GGML_META_LAYERS")) {
+                std::string s(e);
+                size_t p = 0;
+                while (p < s.size()) {
+                    size_t q = s.find(',', p);
+                    if (q == std::string::npos) q = s.size();
+                    try { v.push_back(std::stoi(s.substr(p, q - p))); } catch (...) {}
+                    p = q + 1;
+                }
+                fprintf(stderr, "[fa-meta] selective routing: %zu layers on Meta:", v.size());
+                for (int l : v) fprintf(stderr, " %d", l);
+                fprintf(stderr, "\n");
+            }
+            return v;
+        }();
+        if (!meta_only_layers.empty() && !hybrid_gdn_devs.empty()) {
+            bool on_meta = (il == n_layer_all);
+            for (int l : meta_only_layers) { if (l == il) { on_meta = true; break; } }
+            if (on_meta) {
+                auto * dev = devices.at(0).dev; // tensor mode: devices = [Meta composite]
+                LLAMA_LOG_DEBUG("load_tensors: layer %3d -> META (selective)\n", il);
+                return {dev, &pimpl->gpu_buft_list.at(dev)};
+            }
+            if (il < n_layer_all) {
+                ggml_backend_dev_t dev = hybrid_gdn_devs[il % hybrid_gdn_devs.size()];
+                LLAMA_LOG_DEBUG("load_tensors: layer %3d -> individual %s (selective)\n", il, ggml_backend_dev_name(dev));
+                return {dev, &pimpl->gpu_buft_list.at(dev)};
+            }
+        }
         // [inverse-hybrid] In tensor mode with -ngl N, the LAST N layers go to the Meta composite
         // (contiguous block — proven safe). Route the REMAINING layers to individual CUDA devices
         // (layer-split semantics) instead of CPU for fast compute. One foreign→Meta transition,

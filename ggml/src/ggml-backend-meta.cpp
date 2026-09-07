@@ -12,6 +12,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <set>
@@ -2704,9 +2706,136 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                 }
             }
         }
-    }
 
-    // [tsplit-dev] KV mirror checksum dump (H2/H12 discriminator): at end of compute, checksum
+        // [boundary] post-AllReduce coherence check: the subgraph's boundary node must hold
+        // IDENTICAL values on all backends immediately after the reduction. Captured at kernel
+        // time (no allocator-reuse confound). Divergence here = the reduction path is broken.
+        {
+            static int bnd_count = 0;
+            if (getenv("GGML_META_DUMP_KV") && bnd_count < 48) {
+                float l2s[8]; bool have[8] = {false}; const char * bname = "";
+                for (size_t j = 0; j < n_backends && j < 8; j++) {
+                    auto & bcj = backend_ctx->backend_configs[j];
+                    ggml_cgraph * cg = bcj.cgraphs[i].cgraph_main;
+                    if (!cg || cg->n_nodes == 0) continue;
+                    ggml_tensor * bn = cg->nodes[cg->n_nodes - 1];
+                    if (!bn || !bn->data || bn->type != GGML_TYPE_F32) continue;
+                    size_t nb = ggml_nbytes(bn);
+                    if (nb < 16) continue;
+                    if (j == 0) bname = bn->name;
+                    static std::vector<uint8_t> bb; bb.resize(std::min(nb, (size_t)16384));
+                    ggml_backend_synchronize(bcj.backend);
+                    ggml_backend_tensor_get(bn, bb.data(), 0, bb.size());
+                    float l2 = 0.0f;
+                    for (size_t f = 0; f < bb.size()/4; f++) { float v = ((float*)bb.data())[f]; l2 += v*v; }
+                    l2s[j] = l2; have[j] = true;
+                }
+                bool coherent = true; float ref = 0.0f; bool rset = false;
+                for (int j = 0; j < 8; j++) {
+                    if (!have[j]) continue;
+                    if (!rset) { ref = l2s[j]; rset = true; continue; }
+                    if (fabsf(l2s[j] - ref) > 1e-3f * (fabsf(ref) + 1.0f)) { coherent = false; break; }
+                }
+                float b0f0 = 0.0f;
+                {
+                    auto & bcj = backend_ctx->backend_configs[0];
+                    ggml_cgraph * cg = bcj.cgraphs[i].cgraph_main;
+                    if (cg && cg->n_nodes > 0) {
+                        ggml_tensor * bn = cg->nodes[cg->n_nodes - 1];
+                        if (bn && bn->data && bn->type == GGML_TYPE_F32 && ggml_nbytes(bn) >= 16) {
+                            static std::vector<uint8_t> bf; bf.resize(64);
+                            ggml_backend_tensor_get(bn, bf.data(), 0, 64);
+                            b0f0 = ((float*)bf.data())[0];
+                        }
+                    }
+                }
+                fprintf(stderr, "[bnd] %d subgraph=%zu/%zu coherent=%d name=%s f0=%.6g l2:",
+                        bnd_count, i, backend_ctx->n_subgraphs, (int)coherent, bname, b0f0);
+                for (size_t j = 0; j < n_backends && j < 8; j++) {
+                    fprintf(stderr, " %s%.6g", have[j] ? "" : "x", have[j] ? l2s[j] : 0.0f);
+                }
+                fprintf(stderr, "\n");
+                bnd_count++;
+                // [sig] sigmoid-validity check: sigmoid outputs are in [0,1], so l2 <= sqrt(nf).
+                // Any sigmoid node with l2 > 1.2*sqrt(nf) right after subgraph 0 completed
+                // (pre-reuse, kernel-time) is mathematically impossible = the wrapper read
+                // garbage (e.g. broken strided-view extraction of the interleaved Q/gate).
+                if (i == 0) {
+                    for (size_t j = 0; j < n_backends && j < 4; j++) {
+                        auto & bcj = backend_ctx->backend_configs[j];
+                        for (int k = 0; k < cgraph->n_nodes; k++) {
+                            ggml_tensor * orig = cgraph->nodes[k];
+                            if (!orig || orig->op != GGML_OP_UNARY || ggml_get_unary_op(orig) != GGML_UNARY_OP_SIGMOID) continue;
+                            ggml_tensor * w = (bcj.nodes.size() > (size_t)k) ? bcj.nodes[k] : nullptr;
+                            if (!w || !w->data || w->type != GGML_TYPE_F32) continue;
+                            size_t nbw = ggml_nbytes(w);
+                            if (nbw < 16) continue;
+                            size_t chk = std::min(nbw, (size_t)65536);
+                            static std::vector<uint8_t> sb; sb.resize(chk);
+                            ggml_backend_synchronize(bcj.backend);
+                            ggml_backend_tensor_get(w, sb.data(), 0, chk);
+                            size_t nf = chk / 4;
+                            float l2 = 0.0f; float mn = 1e30f, mx = -1e30f;
+                            for (size_t f = 0; f < nf; f++) {
+                                float v = ((float*)sb.data())[f];
+                                l2 += v*v;
+                                if (v < mn) mn = v;
+                                if (v > mx) mx = v;
+                            }
+                            float lim = 1.2f * sqrtf((float)nf);
+                            if (l2 > lim || mn < -1e-3f || mx > 1.0f + 1e-3f) {
+                                fprintf(stderr, "[sig] BROKEN node=%d name=%s b%zu l2=%.6g limit=%.6g min=%.6g max=%.6g nf=%zu\n",
+                                        k, orig->name, j, l2, lim, mn, mx, nf);
+                            }
+                        }
+                    }
+                }
+                // [intr] interior-name capture after subgraph 0: read backend-0 wrappers of
+                // nodes whose names match GGML_META_TRACE_INTERIOR (comma-separated substrings).
+                // Kernel-time (pre-reuse) values for the block-interior bisection.
+                if (i == 0) {
+                    static const std::vector<std::string> intr_names = []() {
+                        std::vector<std::string> v;
+                        if (const char * e = getenv("GGML_META_TRACE_INTERIOR")) {
+                            std::string s(e);
+                            size_t p = 0;
+                            while (p < s.size()) {
+                                size_t q = s.find(',', p);
+                                if (q == std::string::npos) q = s.size();
+                                v.push_back(s.substr(p, q - p));
+                                p = q + 1;
+                            }
+                        }
+                        return v;
+                    }();
+                    static int intr_count = 0;
+                    if (!intr_names.empty() && intr_count < 80) {
+                        auto & bcj = backend_ctx->backend_configs[0];
+                        for (int k = 0; k < cgraph->n_nodes; k++) {
+                            ggml_tensor * orig = cgraph->nodes[k];
+                            if (!orig || !orig->name[0]) continue;
+                            bool match = false;
+                            for (auto & nm : intr_names) { if (nm.size() && strstr(orig->name, nm.c_str())) { match = true; break; } }
+                            if (!match) continue;
+                            ggml_tensor * w = (bcj.nodes.size() > (size_t)k) ? bcj.nodes[k] : nullptr;
+                            if (!w || !w->data || w->type != GGML_TYPE_F32) continue;
+                            size_t nbw = ggml_nbytes(w);
+                            if (nbw < 16) continue;
+                            size_t chk = std::min(nbw, (size_t)16384);
+                            static std::vector<uint8_t> ib; ib.resize(chk);
+                            ggml_backend_synchronize(bcj.backend);
+                            ggml_backend_tensor_get(w, ib.data(), 0, chk);
+                            float l2 = 0.0f;
+                            for (size_t f = 0; f < chk/4; f++) { float v = ((float*)ib.data())[f]; l2 += v*v; }
+                            fprintf(stderr, "[intr] %d node=%d name=%s f0=%.6g l2=%.6g nbj=%zu\n",
+                                    intr_count, k, orig->name, ((float*)ib.data())[0], l2, nbw);
+                            intr_count++;
+                        }
+                    }
+                }
+            }
+        }
+    }
     // each FLASH_ATTN_EXT node's K (src[1]) and V (src[2]) source views per backend. Mirrored KV
     // caches must be byte-identical across backends; divergence localizes the corruption to a
     // specific cache write path. Gated by GGML_META_DUMP_KV, first 6 computes only.
@@ -2728,8 +2857,9 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                         if (!src) continue;
                         bool fgn = !ggml_backend_buffer_is_meta(src->buffer);
                         const auto sss = ggml_backend_meta_get_split_state(src, false);
-                        fprintf(stderr, "[n0]   src[%d]: op=%d name=%s foreign=%d axis=%d nb=%zu\n",
-                                s, (int)src->op, src->name, (int)fgn, (int)sss.axis, ggml_nbytes(src));
+                        fprintf(stderr, "[n0]   src[%d]: op=%d name=%s foreign=%d axis=%d nb=%zu ne=[%lld,%lld,%lld,%lld]\n",
+                                s, (int)src->op, src->name, (int)fgn, (int)sss.axis, ggml_nbytes(src),
+                                (long long)src->ne[0], (long long)src->ne[1], (long long)src->ne[2], (long long)src->ne[3]);
                     }
                     for (size_t j = 0; j < n_backends; j++) {
                         auto & bcj = backend_ctx->backend_configs[j];
@@ -2754,6 +2884,13 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                             static std::vector<uint8_t> b2v; b2v.resize(64);
                             ggml_backend_tensor_get(w->src[1], b2v.data(), 0, 64);
                             s1f = ((float*)b2v.data())[0];
+                        }
+                        if (w->src[0]) {
+                            ggml_tensor * ws0 = w->src[0];
+                            fprintf(stderr, "[n0]   backend %zu src0_wrapper ne=[%lld,%lld,%lld,%lld] nb0=%lld data=%p\n",
+                                    j, (long long)ws0->ne[0], (long long)ws0->ne[1],
+                                    (long long)ws0->ne[2], (long long)ws0->ne[3],
+                                    (long long)ws0->nb[0], (void*)ws0->data);
                         }
                         fprintf(stderr, "[n0]   backend %zu: COMPUTE=%d nbj=%zu f0=%g src0_nbj=%zu s0f=%g s1f=%g src0_ptr=%p\n",
                                 j, (int)comp, nbw, f0v,

@@ -20,6 +20,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <algorithm>
+#include <cstring>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -1803,6 +1805,49 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
             if (ec != GGML_STATUS_SUCCESS) {
                 return ec;
+            }
+
+            // [tr] Sched-level named-tensor tracer: after each split computes, read matching
+            // tensors' values. Works on ANY backend (individual CUDA or Meta composite) — gives
+            // the correct layer-mode reference vs the Meta-mode values for the same named
+            // tensors. The first tensor whose values diverge between modes = corruption entry.
+            {
+                static std::vector<std::string> tr_names = []() {
+                    std::vector<std::string> v;
+                    if (const char * e = getenv("GGML_SCHED_TRACE_TENSORS")) {
+                        std::string s(e);
+                        size_t p = 0;
+                        while (p < s.size()) {
+                            size_t q = s.find(',', p);
+                            if (q == std::string::npos) q = s.size();
+                            v.push_back(s.substr(p, q - p));
+                            p = q + 1;
+                        }
+                    }
+                    return v;
+                }();
+                static int tr_count = 0;
+                if (!tr_names.empty() && tr_count < 200) {
+                    ggml_backend_synchronize(split_backend);
+                    for (int k = 0; k < split->graph.n_nodes; k++) {
+                        ggml_tensor * t = split->graph.nodes[k];
+                        if (!t || !t->name[0] || t->type != GGML_TYPE_F32 || !t->buffer) continue;
+                        bool match = false;
+                        for (auto & nm : tr_names) { if (nm.size() && strstr(t->name, nm.c_str())) { match = true; break; } }
+                        if (!match) continue;
+                        size_t nb = ggml_nbytes(t);
+                        if (nb < 16) continue;
+                        size_t chk = std::min(nb, (size_t)16384);
+                        static std::vector<uint8_t> tr_buf; tr_buf.resize(chk);
+                        ggml_backend_tensor_get(t, tr_buf.data(), 0, chk);
+                        float l2 = 0.0f;
+                        for (size_t f = 0; f < chk/4; f++) { float v = ((float*)tr_buf.data())[f]; l2 += v*v; }
+                        fprintf(stderr, "[tr] %d backend=%s tensor=%s f0=%.6g l2=%.6g nb=%zu\n",
+                                tr_count, ggml_backend_name(split_backend), t->name,
+                                ((float*)tr_buf.data())[0], l2, nb);
+                        tr_count++;
+                    }
+                }
             }
         } else {
             // similar to ggml_backend_compare_graph_backend
