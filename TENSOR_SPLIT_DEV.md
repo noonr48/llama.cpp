@@ -1164,3 +1164,36 @@ The two-mode architecture investigation (24 commits) is the research foundation
 that identified this optimization. The contiguous hybrid correctness proof
 (NGL=5 HIT) and the GDN corruption characterization define the next arc for
 the full tensor-split prefill (2.4-3x potential).
+
+## THE FIX — 2026-09-07 20:49: MIRROR_WQ unlocks NGL≥6 exact recall
+
+**GGML_META_MIRROR_WQ=1** mirrors wq+wo for FA layers (env-gated, src/llama-model.cpp):
+every backend computes the FA block redundantly-but-correctly — full attention each backend
+(identical results), MIR×MIR→MIR, no post-attention AllReduce needed.
+
+### Validation results (all temperature=0, deterministic):
+| Config | Reproducer 1.5k | Fresh 25k needle | Prefill |
+|---|---|---|---|
+| CPU (no split, ground truth) | HIT ×2 | — | ~90 t/s |
+| Layer 4-GPU (reference) | HIT 3/4 | HIT (53.2s, ~489 t/s) | 489 t/s |
+| NGL=6 broken | MISS 'RZAWZ' | — | 365 t/s |
+| **{43}+MIRROR_WQ** | **HIT exact** | — | 366 t/s |
+| **NGL=6+MIRROR_WQ** | **HIT exact** | **HIT exact (70.6s, ~367 t/s)** | 388 t/s |
+
+### Root-cause chain (the instrument evidence):
+1. K/V caches bit-identical to layer-mode reference (cache_k/v_l43/l47) — the K/V write path
+   and its hc_mixed input processing are CORRECT on the Meta
+2. attn_output boundary wrong vs layer reference (f0 -0.369 vs -0.204; FA47 equally wrong)
+3. Corruption is FA-on-Meta UNIVERSAL (FA43 and FA47 both wrong; {47}-alone exact HIT = margin
+   luck; 2 FAs compound errors past the luck threshold)
+4. MIRROR_WQ bypasses the corrupted path → exact recall ⇒ the corruption is in the split-Q
+   path: wq-split → interleaved [Q|gate] strided-view extraction → head-split attention →
+   gate alignment → split wo (the exact wrapper defect in handle_view's strided-view slicing
+   of split interleaved tensors is localized but not line-pinned — future work)
+
+### Dead hypotheses (all instrument-killed): set_tensor path, CPY compute flags, delay-scan,
+KV mirror incoherence, allocator overlap (legal), foreign-input classification, Meta→foreign
+crossing, input-wrapper shapes/strides, model/prompt marginality (CPU deterministic).
+
+### Remaining work: full-tensor mode (NGL=99) hits a separate boot-time alloc assert;
+the true wrapper fix (keeping head-split attention for max prefill perf) is the follow-up.
