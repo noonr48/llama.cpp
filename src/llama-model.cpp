@@ -1497,6 +1497,30 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         pimpl->gpu_buft_list.emplace(dev.dev, std::move(buft_list));
     }
 
+    // [inverse-hybrid] In tensor mode, also build layer-mode buft lists for the individual
+    // GPU devices (from the backend registry). GDN/recurrent layers route to these (round-robin);
+    // full-attention layers keep the Meta composite. Bisection evidence (TENSOR_SPLIT_DEV.md):
+    // the GDN tensor split compounds corruption beyond ~3 layers; the full-attn split is clean
+    // (mirrored KV + K/V-proj + split Q). The registry holds only real CUDA devices (the Meta
+    // composite is not registered), so every GPU-type device here is an individual.
+    std::vector<ggml_backend_dev_t> hybrid_gdn_devs;
+    if (split_mode == LLAMA_SPLIT_MODE_TENSOR && !devices.empty()) {
+        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU
+                    && pimpl->gpu_buft_list.find(dev) == pimpl->gpu_buft_list.end()) {
+                buft_list_t bl = make_gpu_buft_list(dev, LLAMA_SPLIT_MODE_LAYER, nullptr);
+                bl.insert(bl.end(), pimpl->cpu_buft_list.begin(), pimpl->cpu_buft_list.end());
+                pimpl->gpu_buft_list.emplace(dev, std::move(bl));
+                hybrid_gdn_devs.push_back(dev);
+            }
+        }
+        if (!hybrid_gdn_devs.empty()) {
+            LLAMA_LOG_INFO("%s: inverse-hybrid active — %zu individual devices for recurrent (GDN) layers; full-attention on the Meta composite\n",
+                    __func__, hybrid_gdn_devs.size());
+        }
+    }
+
     ggml_backend_dev_t cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
     if (cpu_dev == nullptr) {
         throw std::runtime_error(format("%s: no CPU backend found", __func__));
@@ -1542,6 +1566,14 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         if (il < i_gpu_start || (il - i_gpu_start) >= act_gpu_layers) {
             LLAMA_LOG_DEBUG("load_tensors: layer %3d assigned to device %s, is_swa = %d\n", il, ggml_backend_dev_name(cpu_dev), is_swa);
             return {cpu_dev, &pimpl->cpu_buft_list};
+        }
+        // [inverse-hybrid] recurrent (GDN) layers -> individual devices (layer-split semantics,
+        // clean numerics); full-attention layers -> the Meta composite (tensor split, carries the
+        // KV-heavy prefill load). Falls through to the default (the Meta) for non-recurrent.
+        if (!hybrid_gdn_devs.empty() && il < n_layer_all && hparams.is_recr(il)) {
+            ggml_backend_dev_t dev = hybrid_gdn_devs[il % hybrid_gdn_devs.size()];
+            LLAMA_LOG_DEBUG("load_tensors: layer %3d (recurrent) -> individual device %s\n", il, ggml_backend_dev_name(dev));
+            return {dev, &pimpl->gpu_buft_list.at(dev)};
         }
         const int layer_gpu = std::upper_bound(splits.begin(), splits.begin() + n_devices(), float(il - i_gpu_start)/act_gpu_layers) - splits.begin();
         auto * dev = devices.at(layer_gpu).dev;

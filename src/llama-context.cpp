@@ -337,6 +337,27 @@ llama_context::llama_context(
             backends.emplace_back(backend);
         }
 
+        // [inverse-hybrid] In tensor mode the model's device list holds only the Meta composite,
+        // but hybrid-routed GDN layer tensors live on the individual CUDA device buffers. The
+        // scheduler needs backends for them or it aborts (pre-allocated tensor in a buffer that
+        // cannot run the operation). Initialize backends for any registry GPU devices not
+        // already covered — idle backends are harmless in the sched.
+        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                bool already = false;
+                for (const auto & d : model.devices) {
+                    already = already || d.dev == dev;
+                }
+                if (!already) {
+                    ggml_backend_t backend = ggml_backend_dev_init(dev, nullptr);
+                    if (backend != nullptr) {
+                        backends.emplace_back(backend);
+                    }
+                }
+            }
+        }
+
         // add ACCEL backends (such as BLAS)
         for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
             ggml_backend_dev_t dev = ggml_backend_dev_get(i);
