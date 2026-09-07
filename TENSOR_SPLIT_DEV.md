@@ -762,3 +762,21 @@ crash first (it's a real bug regardless — the segfault site narrows to the
 decode-graph build with mixed CPU/meta backends); (c) the instrumented GDN
 state-norm dump (no boundary mixing needed). The bisection goal stands: find
 the first layer whose tensor-splitting breaks global-context integration.
+
+## SESSION CLOSE 2026-09-07 11:00 — the two-mode mission state
+
+-ngl 24 retried with max_tokens=2: deterministic segfault (prefill completes at
+74 t/s, core dump at the generation-graph build). The -ngl bisection is blocked
+by the mixed-boundary crash itself. ARC ORDER for the next session:
+1. coredumpctl on the -ngl segfault → fix the mixed CPU/meta generation-graph
+   bug (a real bug regardless of the mission) → the -ngl bisection becomes
+   viable → find the first layer whose splitting breaks global context;
+2. or the instrumented GDN state-norm dump (no boundary mixing needed);
+3. then the fix + the needle ladder + the two-mode acceptance measurement.
+
+DELIVERED TODAY: -ub 1024 on :8331 (live 372 t/s, committed b880fe1); the swap
+mechanism (flashnext-tensor-ingest + qwen38-tensor-prefill.service, preflight
+fail-closed, auto-restore); the complete tensor-corruption characterization
+(local intact/global broken; token-level logprob proof; adjacency/temp/length/
+cache/content ruled out; GDN recurrent-state split the prime suspect); 6 design-
+doc commits pushed (tip 5fc8e5546). Lane healthy throughout.
