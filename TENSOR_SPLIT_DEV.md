@@ -749,3 +749,16 @@ conv/full-attn paths (mirrored, intact). PRIME SUSPECT CONFIRMED-sharpened:
 the GDN recurrent-state split path corrupts global context integration while
 leaving local statistics intact. The per-layer instrumentation arc should dump
 the GDN state norms per layer in both modes on /tmp/repro-1p5k.txt.
+
+## NGL BISECTION ATTEMPT 2026-09-07 10:55 — mixed CPU/meta boundary segfaults
+
+-ngl 24 (layers 0-23 meta/tensor-split, 24-47 CPU): server BOOTS, prefill
+COMPLETES (1550 tok at 73 t/s — CPU layers slow but functional), then SEGFAULT
+at the prefill->generation transition. The mixed-boundary path in tensor mode
+is itself fragile (crash, not a clean recall answer). NEXT-SESSION OPTIONS:
+(a) the -ot override-tensor variant (route layers to CPU via pattern=buffer,
+the -ncmoe-proven path — may avoid the -ngl boundary bug); (b) fix the boundary
+crash first (it's a real bug regardless — the segfault site narrows to the
+decode-graph build with mixed CPU/meta backends); (c) the instrumented GDN
+state-norm dump (no boundary mixing needed). The bisection goal stands: find
+the first layer whose tensor-splitting breaks global-context integration.
