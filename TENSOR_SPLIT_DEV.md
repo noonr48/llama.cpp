@@ -679,3 +679,23 @@ ACCEPTANCE — ALL FOUR MET:
 OPERATIONAL LESSON (load-bearing): tensor-mode test servers MUST carry the same
 reasoning flags as the deployed lane, or qwen4exp quality tests measure thinking-
 as-content artifacts. Probe: meta_recall_probe.py (validated both directions).
+
+## RELIABILITY FINDINGS 2026-09-07 10:35 — temp test + length sweep + cache audit
+
+TEMP: 0/6 recall at temp 0.7/1.0 on the fixed gibberish prompt (3 seeds each) —
+fails at ALL temperatures. Answers are coherent-but-unrelated ('The provided
+image appears to be a static image...' on an imageless prompt; refusals;
+markdown soup) = the question-context link is scrambled, not argmax marginality.
+
+LENGTH SWEEP: the fixed gibberish prompt misses at 1.5k/4k/9.8k/23k — no
+threshold. NOTE (confound audit): requests 2-4 rode the single slot's LCP
+prefix reuse (f_sim 0.25, f_keep 0.645) — valid common-prefix reuse for these
+prompts, and request 1 (clean boot, 1.5k) missed anyway; the 27k first-request
+failures were also clean. Cache contamination ruled out as the cause.
+
+SYNTHESIS: gibberish filler fails ALWAYS on tensor (any length/temp); prose
+haystacks are bistable (passed 3x last night, failed 8x today — unseeded content
+variance); layer mode answers everything. The question-attention link breaks
+under split execution in a content-statistics-dependent way. The per-op numeric
+comparison arc (vs single-GPU reference, the arc-2b entry) is THE next step;
+deterministic reproducer: /tmp/twomode-test-prompt.txt.
