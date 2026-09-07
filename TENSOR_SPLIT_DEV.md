@@ -699,3 +699,33 @@ variance); layer mode answers everything. The question-attention link breaks
 under split execution in a content-statistics-dependent way. The per-op numeric
 comparison arc (vs single-GPU reference, the arc-2b entry) is THE next step;
 deterministic reproducer: /tmp/twomode-test-prompt.txt.
+
+## DIAGNOSTIC DOSSIER FINAL 2026-09-07 10:50 — token-level proof + the day-flip mystery
+
+LOGPROBS (the decisive probe, identical 1.5k prompt, censored model):
+  LAYER : tok[0]='MAP' logprob -0.001 (7.8-unit margin; certain)
+  TENSOR: tok[0]='I'   logprob -1.229; top5 = I/Here/To/**/Hi — 'MAP' ABSENT.
+NOT numeric marginality (a marginal flip would show 'MAP' near-tied). The
+keyword's information is ABSENT from the output distribution: the prompt
+representation is corrupted before generation begins.
+
+ADJACENCY probe: keyword immediately before the question → MISS ("I have no
+access..."). NOT a retrieval-range issue — even recency-path attention fails.
+
+LOTTERY: 5x unseeded deep_needle today: 0 pass (3 explicit fail + 2 extent-err).
+Today's total: ~0/17 across every content class. Last night: 3/3 (unseeded).
+DAY-FLIP MYSTERY: same binary (mtime 04:44 < passes 05:21+), same flags, same
+model files, same corpus source, same GPU set, same device order. Ruled out:
+ubatch, temperature, cache contamination, adjacency, length, content class,
+binary identity. Remaining suspects: environmental (driver/GPU state) — the
+one isolation left is a GPU/driver reset, which disrupts the resident services
+(owner's call); or an unseeded-content draw coincidence too unlikely to credit
+(P(3/3|p=0.1) = 0.1%).
+
+RELIABILITY ARC ENTRY (next session, instrumented): per-layer activation/logit
+dump in both split modes on /tmp/repro-1p5k.txt (deterministic MISS) — find the
+first layer where the representations diverge; that layer's split op is the bug.
+Suspect order: (1) the GDN recurrent-state path under degenerate content
+statistics (gibberish/word-salad = rank-deficient state regimes), (2) the
+indexer compute split, (3) an assume-sync PARTIAL masquerade that is
+content-gated via graph-shape variation.
