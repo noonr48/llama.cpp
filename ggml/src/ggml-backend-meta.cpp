@@ -2258,18 +2258,11 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                 if (node->view_src != nullptr && node->view_src->op == GGML_OP_NONE && ggml_backend_buffer_is_host(node->view_src->buffer)) {
                     continue;
                 }
-                // [inverse-hybrid] Foreign-buffer nodes (GDN layers on individual devices) act as
-                // MANDATORY subgraph boundaries: the Meta's partial outputs must be reduced
-                // (AllReduce) before crossing to a foreign backend. Close the current subgraph
-                // before the foreign node and resume after it.
+                // [inverse-hybrid] Foreign-buffer nodes (GDN layers on individual devices) have no
+                // meta split state — skip the split-state query but DON'T create a subgraph boundary
+                // here (the delay capping below handles the reduction boundary). Creating boundaries
+                // at foreign nodes produces mixed subgraphs that crash in buffer_clear.
                 if (!ggml_backend_buffer_is_meta(node->buffer)) {
-                    if (i_start < i) {
-                        for (size_t j = 0; j < n_backends; j++) {
-                            backend_ctx->backend_configs[j].cgraphs[n_subgraphs].offset = i_start;
-                        }
-                        n_subgraphs++;
-                    }
-                    i_start = i + 1;
                     continue;
                 }
                 const ggml_backend_meta_split_state split_state = ggml_backend_meta_get_split_state(node, /*assume_sync =*/ false);
