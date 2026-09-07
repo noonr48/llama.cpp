@@ -1958,6 +1958,10 @@ static void ggml_backend_meta_set_tensor_async(ggml_backend_t backend, ggml_tens
             GGML_ASSERT(offset_j == chunk_size_full);
         } break;
         case GGML_BACKEND_SPLIT_AXIS_MIRRORED: {
+            // [inverse-hybrid] Diagnostic: verify mirrored writes reach all backends
+            if (getenv("GGML_META_DEBUG")) {
+                fprintf(stderr, "[meta-set] MIRRORED write to %s: %zu bytes to %zu backends\n", tensor->name, size, n_backends);
+            }
             for (size_t j = 0; j < n_backends; j++) {
                 ggml_backend_tensor_set_async(
                     ggml_backend_meta_simple_backend(backend, j), ggml_backend_meta_buffer_simple_tensor(tensor, j), data, offset, size);

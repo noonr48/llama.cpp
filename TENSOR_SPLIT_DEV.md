@@ -1118,3 +1118,23 @@ FA43 input in NGL=6 — verify all 4 backends receive the correct input.
 If the copy only reaches one backend, the fix is in the Meta's buffer
 set_tensor implementation (replicating writes to all simple backends for
 foreign inputs).
+
+## SET_TENSOR DIAGNOSTIC 2026-09-07 13:32 — the copy goes through the GRAPH, not set_tensor
+
+The set_tensor diagnostic (MIRRORED write trace, GGML_META_DEBUG=1) on NGL=6:
+0 MIRRORED writes. The sched NEVER calls the Meta's set_tensor for the
+foreign→Meta activation transition. The copy happens through a GRAPH-BASED
+CPY node processed within the Meta's graph_compute machinery.
+
+THE ACTUAL COPY PATH: the sched inserts a CPY node at the CUDA→Meta split
+boundary. The CPY node's output is in the Meta's buffer (so it's not skipped
+by my foreign-node guards). The Meta's simple backends process the CPY.
+The corruption likely occurs within this CPY processing — the source data is
+on a DIFFERENT CUDA device than the simple backend reading it, and the
+peer-to-peer access or the Meta's wrapper creation may be wrong.
+
+NEXT SESSION ENTRY (refined): instrument the CPY nodes in the Meta's
+graph_compute — specifically for the FA43 input in NGL=6, print which
+simple backend processes the CPY, what src[0] buffer it reads from, and
+whether the data is correct. The fix is either in the CPY's wrapper
+creation (population loop) or in the simple backends' cross-device read.
