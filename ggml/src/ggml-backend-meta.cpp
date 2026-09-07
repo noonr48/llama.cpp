@@ -2392,6 +2392,14 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                 const size_t i_node_start = bcj.cgraphs[i_graph].offset;
                 const size_t i_node_stop = i_graph + 1 < n_subgraphs ? bcj.cgraphs[i_graph + 1].offset : cgraph->n_nodes;
                 cgraph_ij->n_nodes = i_node_stop - i_node_start;
+                // [inverse-hybrid] Trim trailing foreign nodes from the subgraph — the AllReduce
+                // at the subgraph boundary must operate on a META node's per-backend wrapper,
+                // not a foreign pass-through node. Foreign nodes' compute is handled by the
+                // scheduler's own splits (the 51-split evidence).
+                while (cgraph_ij->n_nodes > 0 &&
+                        !ggml_backend_buffer_is_meta(cgraph->nodes[i_node_start + cgraph_ij->n_nodes - 1]->buffer)) {
+                    cgraph_ij->n_nodes--;
+                }
                 ggml_hash_set_reset(&cgraph_ij->visited_hash_set);
                 for (size_t i_node = i_node_start; i_node < i_node_stop; i_node++) {
                     ggml_tensor * node_ij = bcj.nodes[i_node];
