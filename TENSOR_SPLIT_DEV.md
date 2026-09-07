@@ -957,3 +957,28 @@ partitioning, when the successor of a PARTIAL-output node is a foreign-buffer
 node, force the reduction boundary there (don't delay past it). The
 get_i_delayed machinery already handles this for MoE partials — extend it to
 respect foreign-backend boundaries. This is a focused, well-scoped change.
+
+## V7 2026-09-07 12:28 — boundary approach crashes (illegal memory access)
+
+The AllReduce boundary implementation (foreign nodes close subgraphs + delay
+capping at foreign boundaries) builds but crashes at runtime with a CUDA
+illegal memory access in ggml_backend_cuda_buffer_clear during the first
+compute pass. The boundary offsets create subgraph ranges that mix meta and
+foreign tensors; the population loop's pass-through (bcj.nodes[i] = node for
+foreign) leaves the compute machinery trying to clear buffers via invalid
+tensor pointers.
+
+V6 vs V7 trade-off: V6 (skip) = stable but wrong (unreduced partials cross);
+V7 (boundary) = correct direction but implementation bugs. The proper fix
+needs the subgraph construction to create SEPARATE foreign-only subgraphs
+that the meta's compute simply ignores, with clean handoff of the reduction
+at each boundary. This is a careful multi-day integration — not a quick edit.
+
+SESSION SUMMARY 2026-09-07 (the two-mode-lane day):
+- Increment 1 DEPLOYED: -ub 1024 (372 t/s live)
+- Segfault FIXED (needs_rebuild-forced alloc)
+- BISECTION: GDN split compounds corruption; full-attn clean; NGL=4 = HIT
+- Inverse hybrid arc v1-v7: loader routing ✓, context backends ✓, sched splits
+  (51) ✓, guards ✓, boundary approach started; remaining = correct subgraph
+  construction at foreign boundaries (the activation transition)
+- 15 commits pushed today (tip pending V7)

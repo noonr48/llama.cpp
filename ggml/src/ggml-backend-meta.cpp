@@ -2258,9 +2258,18 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                 if (node->view_src != nullptr && node->view_src->op == GGML_OP_NONE && ggml_backend_buffer_is_host(node->view_src->buffer)) {
                     continue;
                 }
-                // [inverse-hybrid] Foreign-buffer nodes (GDN layers on individual devices) have no
-                // meta split state — skip the split-state query and the subgraph scan for them.
+                // [inverse-hybrid] Foreign-buffer nodes (GDN layers on individual devices) act as
+                // MANDATORY subgraph boundaries: the Meta's partial outputs must be reduced
+                // (AllReduce) before crossing to a foreign backend. Close the current subgraph
+                // before the foreign node and resume after it.
                 if (!ggml_backend_buffer_is_meta(node->buffer)) {
+                    if (i_start < i) {
+                        for (size_t j = 0; j < n_backends; j++) {
+                            backend_ctx->backend_configs[j].cgraphs[n_subgraphs].offset = i_start;
+                        }
+                        n_subgraphs++;
+                    }
+                    i_start = i + 1;
                     continue;
                 }
                 const ggml_backend_meta_split_state split_state = ggml_backend_meta_get_split_state(node, /*assume_sync =*/ false);
@@ -2274,22 +2283,36 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
 
                 const int i_delayed = get_i_delayed(i);
 
+                // [inverse-hybrid] Cap the delay at the first foreign-buffer node — the AllReduce
+                // must complete before any foreign consumer reads the partial output
+                int i_delayed_capped = i_delayed;
+                for (int k = i + 1; k <= i_delayed && k < cgraph->n_nodes; k++) {
+                    ggml_tensor * fk = cgraph->nodes[k];
+                    if (fk->view_src != nullptr && fk->view_src->op == GGML_OP_NONE && ggml_backend_buffer_is_host(fk->view_src->buffer)) {
+                        continue;
+                    }
+                    if (!ggml_backend_buffer_is_meta(fk->buffer)) {
+                        i_delayed_capped = k - 1;
+                        break;
+                    }
+                }
+
                 // If we can delay the AllReduce we need to consider the interaction with zero-sized tensor slices.
                 // A backend with such a slice would normally have valid data after participating in the AllReduce with a node that has
                 //     its compute flag disabled and thus gets its data zeroed out.
                 // If the AllReduce is delayed then the nodes until that point also need to have their compute flag disabled.
-                if (i_delayed > i) {
+                if (i_delayed_capped > i) {
                     for (size_t j = 0; j < n_backends; j++) {
                         auto & bcj = backend_ctx->backend_configs[j];
                         if ((bcj.nodes[i]->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
-                            for (int ii = i + 1; ii <= i_delayed; ii++) {
+                            for (int ii = i + 1; ii <= i_delayed_capped; ii++) {
                                 bcj.nodes[ii]->flags &= ~GGML_TENSOR_FLAG_COMPUTE;
                             }
                         }
                     }
                 }
 
-                i = i_delayed;
+                i = i_delayed_capped;
 
                 for (size_t j = 0; j < n_backends; j++) {
                     auto & bcj = backend_ctx->backend_configs[j];
