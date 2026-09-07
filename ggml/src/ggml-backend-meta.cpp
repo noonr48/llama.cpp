@@ -2098,6 +2098,26 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
         }
         t_rb_t2 = std::chrono::steady_clock::now(); // [tsplit-dev] Phase B end: node population
 
+        // [inverse-hybrid] CPY-to-MIRRORED fix: the sched inserts CPY nodes at backend split
+        // boundaries (e.g. CUDA-individual → Meta). The CPY's output is MIRRORED (all backends
+        // need the full data). But the wrapper creation may set COMPUTE on only ONE backend,
+        // leaving other mirrors stale — the K/V projections on those backends read garbage.
+        // Fix: ensure ALL backends have the COMPUTE flag for CPY nodes with MIRRORED output.
+        for (int i = 0; i < cgraph->n_nodes; i++) {
+            ggml_tensor * node = cgraph->nodes[i];
+            if (node->op == GGML_OP_CPY && ggml_backend_buffer_is_meta(node->buffer)) {
+                const ggml_backend_meta_split_state ss = ggml_backend_meta_get_split_state(node, /*assume_sync =*/ true);
+                if (ss.axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
+                    for (size_t j = 0; j < n_backends; j++) {
+                        auto & bcj = backend_ctx->backend_configs[j];
+                        if (bcj.nodes[i]) {
+                            bcj.nodes[i]->flags |= GGML_TENSOR_FLAG_COMPUTE;
+                        }
+                    }
+                }
+            }
+        }
+
         {
             // For MoE models it may make sense to delay the AllReduce in order to reduce I/O:
             auto get_i_delayed_branch = [&](const int i) -> int {
