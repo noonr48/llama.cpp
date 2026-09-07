@@ -1060,3 +1060,32 @@ HONEST VERDICT: the mission's performance acceptance is NOT yet met with
 confidence. The correctness architecture is proven (contiguous hybrid). The
 next session needs either (a) repeated prefill measurements to establish the
 -ub 1024 effect, or (b) the GDN corruption fix to unlock the tensor prefill.
+
+## PERFORMANCE ROOT CAUSE 2026-09-07 13:20 — the Meta scheduling overhead
+
+The contiguous hybrid's 10x slowdown (12.8s vs 1.4s prefill on identical
+hardware) decomposes as:
+- 44 individual-device layers sequential pipeline: ~1.4s (same as layer mode)
+- 4 Meta-composite layers: ~11.4s EXTRA (≈2.85s per Meta layer)
+- Each of the 51 sched splits adds ~0.22s when the Meta is involved (vs
+  ~0.03s for pure device-to-device transitions in layer mode)
+
+The Meta's per-transition overhead (~0.22s) comes from its scheduling
+machinery: graph rebuild on shape changes, split-state computation, buffer
+management across 4 simple backends, and AllReduce coordination. This overhead
+exists in full tensor mode too (~2.9s for 48 layers) but is amortized by the
+parallel compute across all backends. In the contiguous hybrid (4 Meta layers
++ 44 individual layers), the same overhead applies per transition but with
+much less parallel compute to amortize it.
+
+CONCLUSION: the contiguous hybrid's performance gap is structural — the Meta
+composite's scheduling cost per transition is ~7x a direct device-to-device
+transition. Reducing this requires either (a) batching multiple Meta layers
+per sched split (the contiguous block already does this — 4 layers in one
+block), or (b) reducing the Meta's per-split overhead (the graph rebuild
+optimization), or (c) the GDN corruption fix to allow all 48 layers on the
+Meta (amortizing the overhead across the full model).
+
+The mission's next session should focus on (c) — the GDN corruption fix —
+as it addresses both correctness (the recall gate) and performance (the
+amortization). The optimization (b) is a secondary target.
