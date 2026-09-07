@@ -913,3 +913,24 @@ CURRENT HYBRID STATE SUMMARY (v1-v5):
 - Context backends: WORKS (the scheduler has all 5 backends)
 - Memory: v4's -ts 3,1,1,1 passes allocation
 - Remaining: the Meta's graph machinery must skip/partition foreign nodes
+
+## V6 2026-09-07 12:12 — mechanically working, recall still fails
+
+Foreign-node guards added at three sites (population ~2084, subgraph scan ~2262,
+plus the earlier on-demand alloc): the hybrid BOOTS with ZERO asserts and serves.
+But the needle still MISSES with the refusal pattern — the guards prevent the
+crash without producing correct computation. The foreign (GDN) nodes' ops are
+being skipped by the Meta's machinery but the scheduler is not routing them to
+their own backends for execution — they either never compute or compute wrongly.
+
+THE REMAINING GAP: the ggml_backend_sched must split the graph and assign
+foreign-buffer nodes to their own (initialized) backends. Currently the sched
+treats the Meta as the sole compute backend for the whole graph. The fix:
+either the sched's op-assignment logic must respect foreign buffer ownership,
+or the Meta's graph_compute must itself dispatch foreign nodes to their
+backends (a mini-sched inside the Meta). This IS the systematic fix from the
+v5 analysis — now confirmed by a working boot with wrong results.
+
+Session end state: 8 commits today (7ba4...→V6 pending), increment 1 deployed,
+segfault fixed, bisection complete, inverse hybrid v1-v6 arc documented with
+the exact remaining gap named.
