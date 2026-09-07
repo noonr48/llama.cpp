@@ -1241,3 +1241,30 @@ FlashNext-trained drafter exists. Net: the portable lucebox wins were already ou
 
 ### Closed non-transfers: 27B-era n3-peak (rig-bound: dispatch tax), fast4 ngram +19%
 (doesn't transfer to 7-GPU: ngram-only measured 52-53 here).
+
+## SPEC-REVIEW CORRECTION 2026-09-08 03:25 — the +92% prefill claim RETRACTED
+
+The overnight arc's headline (prefill 403→776 t/s via mtp+ngram) was CONFOUNDED by the
+server's persistent prompt-checkpoint cache (main-branch feature: "prompt-checkpoint save
+AND restore host-side" at HEAD ac82c727). The 775.86 t/s journal line measured a cache-hit
+restoration of a previously-processed prompt, not cold prefill.
+
+CONTROLLED A/B (fresh prompts per leg, no shared prefix, 7-GPU fast-mix, same flags except
+--spec-type; evidence: server-resources/evidence/overnight-ab-verdict.json):
+| Leg | 25k rate | 48k rate |
+|---|---|---|
+| mtp-only | 423.65 t/s | 399.00 t/s |
+| mtp+ngram | 437.32 t/s | 410.60 t/s |
+| delta | +3.2% | +2.9% |
+
+HONEST FINAL NUMBERS for the deployed mtp+ngram config:
+- Cold prefill: +3% over mtp-only (both lengths); ~437 t/s at 25k, ~411 at 48k, ~359 at 97k
+- Decode: +8% (58.8 vs 54.4 t/s, fresh-content probes)
+- Both axes POSITIVE (the balanced-metric case holds, modestly)
+- The 1-layer MTP draft's prompt catch-up costs only ~2-3s (wall-vs-prompt-eval delta), NOT 30s — the draft-catch-up theory was also wrong
+- BONUS FINDING: the persistent prompt-checkpoint cache gives near-instant re-prefill for repeated prompts (agent retries, template resends) — a real workload win, distinct from cold prefill
+
+Binary provenance note (reviewer F2): the deployed binary is the MAIN branch build
+(llama.cpp-qwen38-next @ ac82c727), which natively supports every deployed flag
+(--spec-type, ngram, mtp). The tsplit-dev fork ships as RESEARCH (MIRROR_WQ, instruments);
+tonight's deployed win is a config discovery on the main build. This is deliberate.
