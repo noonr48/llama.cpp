@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flash-Next MTP — llama.cpp fork &amp; IQ4_NL quantization</title>
+<style>
+  :root {
+    color-scheme: light;
+    --ink: #17211f;
+    --muted: #596662;
+    --line: #d9dfdb;
+    --paper: #fbfcf9;
+    --panel: #ffffff;
+    --accent: #126b5d;
+    --accent-2: #9b5a19;
+    --good: #1c7a4d;
+    --warn: #8a6d1a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--ink); background: var(--paper); }
+  main { width: min(960px, calc(100% - 32px)); margin: 0 auto; padding: 48px 0 80px; }
+  h1 { margin: 0 0 12px; font-size: clamp(1.9rem, 4vw, 3.2rem); line-height: 1.08; }
+  h2 { margin: 56px 0 8px; font-size: 1.5rem; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+  h3 { margin: 28px 0 6px; font-size: 1.13rem; }
+  p { max-width: 780px; }
+  .lead { color: var(--muted); font-size: 1.1rem; }
+  code, .mono { font: 0.92em/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #eef2ee; padding: 1px 5px; border-radius: 4px; }
+  pre { background: #10201c; color: #d7e6df; padding: 14px 16px; border-radius: 8px; overflow-x: auto; font-size: 0.88rem; line-height: 1.5; }
+  pre code { background: none; padding: 0; color: inherit; }
+  table { border-collapse: collapse; margin: 14px 0; width: 100%; max-width: 780px; font-size: 0.95rem; }
+  th, td { border: 1px solid var(--line); padding: 7px 11px; text-align: left; vertical-align: top; }
+  th { background: #f0f4f0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 14px; margin: 22px 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+  .card h3 { margin: 0 0 6px; font-size: 1rem; color: var(--accent); }
+  .card p { margin: 0; font-size: 0.93rem; color: var(--muted); }
+  .figure { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin: 20px 0; }
+  .figure svg { width: 100%; height: auto; display: block; }
+  .figure figcaption { font-size: 0.88rem; color: var(--muted); margin-top: 10px; }
+  .note { border-left: 4px solid var(--accent); background: #eef5f1; padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 16px 0; max-width: 780px; }
+  .warn { border-left-color: var(--accent-2); background: #f7f1e6; }
+  .tag { display: inline-block; font-size: 0.78rem; font-weight: 600; letter-spacing: 0.04em; color: var(--accent); border: 1px solid var(--accent); border-radius: 99px; padding: 1px 10px; margin-right: 6px; vertical-align: middle; }
+  .toc { columns: 2; gap: 24px; font-size: 0.94rem; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc li { margin: 3px 0; }
+  a { color: var(--accent); }
+  footer { border-top: 1px solid var(--line); margin-top: 64px; padding-top: 16px; color: var(--muted); font-size: 0.88rem; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Flash-Next MTP for llama.cpp</h1>
+<p class="lead">Speculative decoding, a quality-biased IQ4_NL quantization, and how we verified both — for the Qwen3.8-Flash-Next (qwen4exp) family.</p>
+
+<p>
+  <span class="tag">fork branch</span><a href="https://github.com/noonr48/llama.cpp/tree/flashnext-mtp">noonr48/llama.cpp · flashnext-mtp</a><br><br>
+  <span class="tag">model</span><a href="https://huggingface.co/jackasda211233/Qwen3.8-Flash-Next-Uncensored-IQ4_NL">jackasda211233/Qwen3.8-Flash-Next-Uncensored-IQ4_NL</a> (Hugging Face)
+</p>
+
+<h2 id="toc">Contents</h2>
+<ul class="toc">
+  <li><a href="#model">The model</a></li>
+  <li><a href="#workloads">What we optimized for</a></li>
+  <li><a href="#prep">How the quantization was prepared</a></li>
+  <li><a href="#methods">Testing methodology</a></li>
+  <li><a href="#results">Quality results</a></li>
+  <li><a href="#perf">Performance engineering</a></li>
+  <li><a href="#honesty">A measurement confound we retracted</a></li>
+  <li><a href="#iterations">Iterations &amp; dead ends</a></li>
+  <li><a href="#supported">What's supported</a></li>
+  <li><a href="#hardware">Hardware note &amp; PCIe caveat</a></li>
+  <li><a href="#acks">Acknowledgments</a></li>
+  <li><a href="#license">License</a></li>
+</ul>
+
+<h2 id="model">The model</h2>
+<p>
+  Qwen3.8-Flash-Next is a large hybrid architecture ("qwen4exp" in llama.cpp): most layers use
+  gated-delta-net (GDN) linear attention with a small number of full-attention layers using
+  query-sparsity attention (QSA), plus a Mixture-of-Experts feed-forward with a per-layer token
+  embedding (PLE) table. It ships with a NextN/MTP head — a 1-layer multi-token-prediction draft
+  that enables speculative decoding.
+</p>
+<p>
+  The quantized release documented here starts from
+  <a href="https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored">orcarouter/Qwen3.8-Flash-Next-Uncensored</a>
+  — an uncensored (abliterated) release of the model, Apache-2.0 — pinned to a specific verified
+  revision. We repacked it with the MTP head split out as a sidecar draft file and produced a
+  quality-biased IQ4_NL quantization of the backbone. The full chain (pinned revisions, tensor
+  manifests, integrity checks) ships with the model as <code>MODEL_PROVENANCE.json</code>.
+</p>
+
+<h2 id="workloads">What we optimized for</h2>
+<p>
+  This quant was built for long-session agentic and creative use, not for leaderboard chasing.
+  The workloads that drove every decision:
+</p>
+<div class="grid">
+  <div class="card"><h3>Heavy reasoning</h3><p>Long multi-step thinking traces; chain quality must survive quantization.</p></div>
+  <div class="card"><h3>Character &amp; story</h3><p>Roleplay and long-form narrative: voice consistency, continuity, nuance.</p></div>
+  <div class="card"><h3>Planning</h3><p>Multi-phase plans with state carried across long contexts.</p></div>
+  <div class="card"><h3>Games</h3><p>Rules systems, simulation logic, and long interactive sessions.</p></div>
+  <div class="card"><h3>Architecture / CAD</h3><p>Spatial reasoning, precise geometry, structured output discipline.</p></div>
+  <div class="card"><h3>3D-spatial</h3><p>Object relationships, transforms, scene descriptions.</p></div>
+  <div class="card"><h3>Science</h3><p>Quantitative reasoning with correct units, notation, and calibration.</p></div>
+  <div class="card"><h3>Vision</h3><p>Image input via the stock projector at full precision, high-resolution.</p></div>
+</div>
+<p>
+  Because these workloads punish subtle degradation more than benchmark prompts do, the acceptance
+  gate was a <em>replicated-loss</em> criterion over a balanced suite (below), not an average score.
+</p>
+
+<h2 id="prep">How the quantization was prepared</h2>
+<ol>
+  <li><strong>Source verification.</strong> An initial NVFP4-quantized derivative was evaluated and
+  <em>rejected</em> during provenance verification. We settled on the verified raw source above and
+  pinned its revision; every downstream artifact traces back to that pin.</li>
+  <li><strong>Backbone repack.</strong> The 32 MTP-head tensors were removed from the backbone
+  (1,224 backbone tensors retained) and re-exported as a sidecar draft GGUF, so the draft serves as
+  the speculative-decoding model. Tensor order, KV sections, and the QSA compress-ratio layout were
+  restored against the source model config — verified by name/shape/dtype checks on all tensors and
+  value sampling at start/middle/end positions (3,360 sampled values matched).</li>
+  <li><strong>Importance-matrix calibration.</strong> An imatrix was built from a multi-domain
+  calibration corpus weighted toward the target workloads above (926 entries).</li>
+  <li><strong>Quantization.</strong> IQ4_NL backbone with sensitive tensors held at higher precision.
+  Final tensor mix: 754 IQ4_NL, 46 Q5_K, 3 Q6_K, 32 Q8_0, 388 F32, 1 F16.</li>
+  <li><strong>Gating.</strong> Every stage wrote hash-stamped logs and manifests; the pipeline gate
+  rechecks stamps and coverage before anything is deployable.</li>
+</ol>
+
+<h2 id="methods">Testing methodology</h2>
+<p>
+  The primary acceptance gate was a <strong>balanced evaluation with symmetric all-seed rules</strong>:
+  three variants — <em>this quant</em>, the <em>base model</em>, and the <em>source Q8_0 reference</em> —
+  ran the identical suite under identical samplers and prompts, across multiple seeds per suite
+  (36 suite-seed runs total). A quality loss only counts if it <strong>replicates across seeds</strong>;
+  single-seed dips are recorded as noise. Scoring uses a 10-point rubric judged blind per axis
+  (quality, thinking-mode, capability under thinking, capability standalone).
+</p>
+<ul>
+  <li><strong>Needle recall</strong> at 25k+ tokens with randomized codes — pass required under the
+  deployed speculative-decoding path.</li>
+  <li><strong>Vision probes</strong> with the stock projector (image grounding and OCR-style checks).</li>
+  <li><strong>Perplexity</strong> on a disjoint public-domain holdout (H.G. Wells, <em>The Time
+  Machine</em> — deliberately disjoint from the calibration corpus) as a secondary sanity check.</li>
+  <li><strong>Sampling discipline.</strong> Thinking-mode settings follow the model author's
+  recommended configuration (temperature 1.0, top-p 0.95, top-k 20); we probed alternatives before
+  adopting them. All performance A/Bs use <em>fresh prompts</em> so prompt-checkpoint caching cannot
+  contaminate cold-prefill numbers.</li>
+</ul>
+
+<h2 id="results">Quality results</h2>
+
+<figure class="figure">
+<svg viewBox="0 0 720 300" role="img" aria-label="Balanced evaluation mean scores by variant">
+  <style>
+    .barlabel { font: 13px ui-sans-serif, system-ui, sans-serif; fill: #17211f; }
+    .val { font: 600 13px ui-sans-serif, system-ui, sans-serif; fill: #17211f; }
+    .axis { stroke: #d9dfdb; }
+  </style>
+  <text x="20" y="24" font-size="15" font-weight="700" fill="#17211f">Balanced evaluation — mean scores (0–10)</text>
+  <!-- gridlines -->
+  <g>
+    <line class="axis" x1="170" y1="50" x2="170" y2="250"/><line class="axis" x1="170" y1="250" x2="690" y2="250"/>
+    <line class="axis" x1="170" y1="150" x2="690" y2="150" stroke-dasharray="3 4"/>
+    <line class="axis" x1="170" y1="100" x2="690" y2="100" stroke-dasharray="3 4"/>
+    <text class="barlabel" x="120" y="154" fill="#596662">5</text>
+    <text class="barlabel" x="120" y="104" fill="#596662">7.5</text>
+    <text class="barlabel" x="120" y="254" fill="#596662">0</text>
+  </g>
+  <!-- Quality cluster: three bars, scale 0-10 -> height = v*20, baseline y=250 -->
+  <rect x="200" y="123.4" width="90" height="126.6" fill="#126b5d" rx="2"/>
+  <text class="val" x="218" y="116">6.33</text>
+  <rect x="330" y="130" width="90" height="120" fill="#9b5a19" rx="2"/>
+  <text class="val" x="348" y="123">6.00</text>
+  <rect x="460" y="136.6" width="90" height="113.4" fill="#8a8f8c" rx="2"/>
+  <text class="val" x="478" y="129">5.67</text>
+  <text class="barlabel" x="200" y="266" fill="#596662">this IQ4_NL</text>
+  <text class="barlabel" x="330" y="266" fill="#596662">base model</text>
+  <text class="barlabel" x="460" y="266" fill="#596662">source Q8_0</text>
+  <!-- legend -->
+  <g font-size="12.5" fill="#596662">
+    <rect x="590" y="272" width="12" height="12" fill="#126b5d"/><text x="608" y="282">this IQ4_NL</text>
+  </g>
+</svg>
+<figcaption>
+  Overall quality means across the balanced suite (36 suite-seed runs, symmetric rules): this IQ4_NL
+  6.33 vs base 6.00 vs source Q8_0 reference 5.67. Thinking-mode probes: 10/10 for all three
+  variants. Capability-under-thinking: 7.67 (this quant) vs 8.00 (base) — no replicated loss; the
+  standalone-capability axis was seed-unstable for all variants (4.00 vs 5.33 means, not replicated
+  across seeds) and is recorded as drift, not as damage.
+</figcaption>
+</figure>
+
+<table>
+  <tr><th>Variant</th><th>Size</th><th>Overall quality</th><th>Thinking</th><th>Zero replicated losses</th></tr>
+  <tr><td><strong>This IQ4_NL</strong></td><td>119 GB</td><td><strong>6.33</strong></td><td>10/10</td><td>—</td></tr>
+  <tr><td>Base model</td><td>~340 GB</td><td>6.00</td><td>10/10</td><td>reference</td></tr>
+  <tr><td>Source Q8_0 reference</td><td>188 GB</td><td>5.67</td><td>10/10</td><td>reference</td></tr>
+</table>
+
+<div class="note">
+  <strong>How to read this:</strong> the balanced eval does not say the Q8_0 reference is "worse" in
+  general — it says that under this suite's prompts, samplers, seeds, and rubric, our IQ4_NL
+  produced no replicated quality losses against either reference and a higher mean. We publish the
+  full methodology precisely so you can judge what that is worth for your use case.
+</div>
+
+<h2 id="perf">Performance engineering</h2>
+<p>
+  All measurements below: llama.cpp layer-split across a mixed 7-GPU set (1× RTX 5090 + 3× RTX 3090 +
+  3× RTX 5060 Ti), 262,144-token context, fp32 KV, fresh 25k-token prompts, 600-token continuous
+  decode means. See the <a href="#hardware">hardware note</a> for the PCIe caveat.
+</p>
+
+<figure class="figure">
+<svg viewBox="0 0 720 260" role="img" aria-label="Speculative decoding gains">
+  <style>.b { font: 13px ui-sans-serif, system-ui, sans-serif; fill:#17211f; } .v { font:600 13px ui-sans-serif,system-ui,sans-serif; fill:#17211f; }</style>
+  <text x="20" y="24" font-size="15" font-weight="700" fill="#17211f">Speculative decoding — controlled A/B (fresh prompts)</text>
+  <line x1="170" y1="46" x2="170" y2="210" stroke="#d9dfdb"/><line x1="170" y1="210" x2="690" y2="210" stroke="#d9dfdb"/>
+  <!-- decode: 54.4 vs 58.8 ; scale 40-65 -> y = 210 - (v-40)*6.47 -->
+  <text class="b" x="20" y="90" font-weight="700">Decode (tok/s)</text>
+  <rect x="210" y="117" width="90" height="93" fill="#8a8f8c" rx="2"/>
+  <text class="v" x="240" y="110">54.4</text>
+  <rect x="330" y="89" width="90" height="121" fill="#126b5d" rx="2"/>
+  <text class="v" x="360" y="82">58.8 (+8%)</text>
+  <text class="b" x="212" y="228" fill="#596662">MTP only</text>
+  <text class="b" x="332" y="228" fill="#596662">MTP + n-gram</text>
+  <!-- prefill: 424 vs 437 ; scale 0-500 -> y = 210 - v*0.28 -->
+  <text class="b" x="500" y="90" font-weight="700">25k prefill</text>
+  <rect x="500" y="91.3" width="70" height="118.7" fill="#8a8f8c" rx="2"/>
+  <text class="v" x="508" y="84">424</text>
+  <rect x="590" y="87.6" width="70" height="122.4" fill="#126b5d" rx="2"/>
+  <text class="v" x="598" y="80">437 (+3%)</text>
+</svg>
+<figcaption>
+  MTP draft alone vs MTP combined with an n-gram draft. The combiner runs the 1-layer MTP head and
+  an n-gram mapper together; both axes improve. Needle and vision probes pass under the combined path.
+</figcaption>
+</figure>
+
+<figure class="figure">
+<svg viewBox="0 0 720 260" role="img" aria-label="MTP draft depth sweep">
+  <style>.b { font: 13px ui-sans-serif, system-ui, sans-serif; fill:#17211f; } .v { font:600 13px ui-sans-serif,system-ui,sans-serif; fill:#17211f; }</style>
+  <text x="20" y="24" font-size="15" font-weight="700" fill="#17211f">Draft depth vs decode speed (tok/s, observed ranges)</text>
+  <line x1="150" y1="46" x2="150" y2="210" stroke="#d9dfdb"/><line x1="150" y1="210" x2="690" y2="210" stroke="#d9dfdb"/>
+  <line x1="150" y1="128" x2="690" y2="128" stroke="#d9dfdb" stroke-dasharray="3 4"/>
+  <!-- scale 40-60 -> y = 210 - (v-40)*8 ; n1 54-58 -> 62-118, mid 88 ; n2 48.7-53.8 -> 110-150, mid 130 ; n3 43.5-46.2 -> 152-174, mid 163 -->
+  <rect x="220" y="62" width="110" height="56" fill="#126b5d" rx="2" opacity="0.85"/>
+  <rect x="224" y="110" width="102" height="8" fill="#596662" opacity="0.5" rx="2"/>
+  <text class="v" x="240" y="54">54 – 58</text>
+  <rect x="390" y="110" width="110" height="40" fill="#9b5a19" rx="2" opacity="0.85"/>
+  <rect x="394" y="144" width="102" height="16" fill="#596662" opacity="0.5" rx="2"/>
+  <text class="v" x="404" y="102">48.7 – 53.8</text>
+  <rect x="560" y="152" width="110" height="22" fill="#8a8f8c" rx="2" opacity="0.85"/>
+  <rect x="564" y="168" width="102" height="6" fill="#596662" opacity="0.5" rx="2"/>
+  <text class="v" x="580" y="144">43.5 – 46.2</text>
+  <text class="b" x="240" y="228" fill="#596662">depth 1</text>
+  <text class="b" x="410" y="228" fill="#596662">depth 2</text>
+  <text class="b" x="580" y="228" fill="#596662">depth 3</text>
+</svg>
+<figcaption>
+  Deeper draft chains from a 1-layer head decay acceptance monotonically — depth 1 is optimal for
+  this architecture. Solid bars are observed mid-ranges; gray bands show full observed min–max.
+</figcaption>
+</figure>
+
+<p>
+  Serving configuration that produced these numbers (see the fork README for flags):
+  <code>--spec-type draft-mtp,ngram-map-k</code> with the sidecar draft, flash attention on, and the
+  full 262k context with fp32 KV.
+</p>
+
+<h2 id="honesty">A measurement confound we retracted</h2>
+<div class="note warn">
+  <p>
+    Our first MTP+n-gram measurement showed a <strong>+92% prefill gain</strong>. It was wrong: the
+    benchmark reused prompts, and the server's persistent prompt-checkpoint cache answered most of the
+    "cold" prefill from disk. A reviewer wave caught the inconsistency, and a controlled A/B with
+    <em>fresh prompts on both sides</em> re-baselined the real effect: <strong>+3% prefill, +8%
+    decode</strong> — the numbers published above. We kept the prompt-checkpoint feature (it is a
+    genuine win for repeated real-world prompts) but banned prompt reuse from every cold-prefill
+    benchmark after that. If you benchmark this stack: <em>always use fresh prompts.</em>
+  </p>
+</div>
+
+<h2 id="iterations">Iterations &amp; dead ends</h2>
+<table>
+  <tr><th>Step</th><th>What we tried</th><th>Outcome</th></tr>
+  <tr><td>Source selection</td><td>NVFP4-quantized derivative</td><td><strong>Rejected</strong> during provenance verification; switched to the pinned raw source.</td></tr>
+  <tr><td>Draft layout</td><td>MTP head in-file vs sidecar</td><td>Sidecar adopted (backbone loads on stock loaders; draft used only for speculative decoding). Unsloth draft-head-only layout also supported in the fork.</td></tr>
+  <tr><td>Quant variants</td><td>Recipe A/B with different sensitive-tensor sets</td><td>Variant B (more tensors held at higher precision) won the balanced eval; final mix published above.</td></tr>
+  <tr><td>GPU topology</td><td>12 → 9 → 7 GPU layer-split</td><td>Smaller fast-mix beat larger pools (9 GPU: 51.2 t/s; 7 GPU: 54.4 t/s baseline) — inter-GPU hops, not compute, were the wall.</td></tr>
+  <tr><td>MTP depth</td><td>n1 / n2 / n3</td><td>n1 optimal; deeper chains monotonically worse (chart above).</td></tr>
+  <tr><td>Spec combiners</td><td>MTP alone vs +n-gram</td><td>Combined wins both axes (+8% decode, +3% prefill, fresh-prompt A/B).</td></tr>
+  <tr><td>Tensor-split serving</td><td>Splitting individual layers across GPUs for prefill throughput</td><td><strong>Research branch, not shipped.</strong> A corruption bug in the split path was root-caused (full-attention layers on the composite device) and fixed, but the end-to-end path is still gated behind a needle-recall pass; not part of this release.</td></tr>
+</table>
+
+<h2 id="supported">What's supported</h2>
+<ul>
+  <li><strong>The fork is upstream llama.cpp plus a scoped delta</strong> — every model and quant type
+  stock llama.cpp runs, the fork runs unchanged.</li>
+  <li><strong>Flash-Next (qwen4exp) models of any provenance</strong> get MTP speculative decoding:
+  draft weights can come from in-file MTP tensors, a sidecar draft GGUF (our layout), or
+  draft-head-only GGUFs in the unsloth layout.</li>
+  <li><strong>Any standard GGUF quant</strong> of Flash-Next works (Q8_0, Q4_K_M, IQ family, …);
+  ours is one specific quality-biased IQ4_NL build.</li>
+  <li><strong>Server improvements apply to all models</strong>: persistent prompt-checkpoint
+  save/restore and speculative-decoding rollback checkpointing.</li>
+  <li>What the <em>model repo</em> provides: backbone GGUF (119 GB), MTP draft sidecar (4 GB),
+  F16 vision projector (1 GB), and the provenance manifest.</li>
+</ul>
+
+<h2 id="hardware">Hardware note &amp; PCIe caveat</h2>
+<p>
+  All performance numbers on this page come from a personal mixed-GPU workstation (RTX 5090 +
+  RTX 3090s + RTX 5060 Tis). <strong>Important caveat: its PCIe links run at Gen3 with 4 lanes.</strong>
+  Multi-GPU layer-split inference moves activations between cards every layer, so interconnect
+  bandwidth is a first-order term for decode speed here. On a Gen4 or Gen5 system (or fewer, faster
+  cards with NVLink), you can reasonably expect better numbers than ours — treat our speeds as a
+  conservative floor, not a ceiling.
+</p>
+
+<h2 id="acks">Acknowledgments</h2>
+<ul>
+  <li><strong>Alibaba's Qwen team</strong> — the Flash-Next architecture and base model.</li>
+  <li><strong><a href="https://huggingface.co/orcarouter">orcarouter</a></strong> — the uncensored
+  release this quantization is derived from, and the direct source of the verified weights.</li>
+  <li><strong><a href="https://github.com/ggml-org/llama.cpp">ggml-org/llama.cpp</a></strong> — the
+  runtime everything here builds on, including upstream qwen4exp architecture support.</li>
+  <li><strong>flash-linear-attention</strong> — the GDN l2norm reference the normalization fix
+  followed.</li>
+  <li><strong>unsloth</strong> — the draft-head-only GGUF layout the loader also accepts.</li>
+  <li>H.G. Wells (1866–1946) — the public-domain holdout corpus.</li>
+</ul>
+
+<h2 id="license">License</h2>
+<p>
+  Model weights chain: <strong>Apache-2.0</strong> (inherited from the base release; see
+  <code>MODEL_PROVENANCE.json</code> in the model repo). Fork code: <strong>MIT</strong>, inherited
+  from llama.cpp.
+</p>
+
+<footer>
+  Flash-Next MTP documentation · fork branch
+  <a href="https://github.com/noonr48/llama.cpp/tree/flashnext-mtp">flashnext-mtp</a> ·
+  model <a href="https://huggingface.co/jackasda211233/Qwen3.8-Flash-Next-Uncensored-IQ4_NL">on Hugging Face</a>
+</footer>
+
+</main>
+</body>
+</html>

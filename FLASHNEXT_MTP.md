@@ -55,13 +55,46 @@ A 1-deep draft (`--spec-draft-n-max 1`) measured best for us — deeper draft ch
 from a 1-layer head decayed acceptance monotonically (n1 54–58, n2 48.7–53.8,
 n3 43.5–46.2 tok/s).
 
+## What's supported
+
+- **Everything upstream llama.cpp supports** — this fork is upstream master plus a scoped delta;
+  all models and quant types run unchanged.
+- **Flash-Next (qwen4exp) models get MTP speculative decoding** — draft weights load from in-file
+  MTP tensors, a sidecar draft GGUF, or draft-head-only GGUFs in the unsloth layout. Any standard
+  quant of the model works; the [tested model](https://huggingface.co/jackasda211233/Qwen3.8-Flash-Next-Uncensored-IQ4_NL)
+  is one quality-biased IQ4_NL build.
+- **Server improvements apply to all models**: persistent prompt-checkpoint save/restore and
+  speculative-decoding rollback checkpointing.
+
+## Documentation
+
+Full methodology and results — how the quantization was prepared, the balanced evaluation
+(36 suite-seed runs, replicated-loss criterion), sampling discipline, performance A/Bs, and the
+iterations and dead ends along the way: **[Flash-Next MTP documentation](https://noonr48.github.io/llama.cpp/flashnext-mtp/)**.
+
+## Hardware note
+
+Speeds above were measured on a mixed consumer-GPU workstation (RTX 5090 + RTX 3090s + RTX 5060 Tis)
+whose PCIe links run at **Gen3 x4** — interconnect-bound, not compute-bound. On Gen4/Gen5 systems
+expect better numbers; treat ours as a conservative floor.
+
 ## Status
 
 - Branch: `flashnext-mtp` (tip tracks the deployed serving build).
 - Not upstream; qwen4exp architecture support **is** already in upstream master, so
   the plain model runs fine on mainline — this branch is for the speculative-decode
   and performance paths.
-- License: MIT, inherited from llama.cpp.
+- License: MIT, inherited from llama.cpp. Model weights chain: Apache-2.0
+  (see the model repo's `MODEL_PROVENANCE.json`).
+
+## Acknowledgments
+
+- Alibaba's Qwen team — the Flash-Next architecture and base model.
+- [orcarouter](https://huggingface.co/orcarouter) — the uncensored release this work derives from.
+- [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) — the runtime, including upstream
+  qwen4exp architecture support.
+- flash-linear-attention — the GDN l2norm reference.
+- unsloth — the draft-head-only GGUF layout the loader accepts.
 
 ## Provenance
 
