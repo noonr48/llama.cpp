@@ -1268,3 +1268,32 @@ Binary provenance note (reviewer F2): the deployed binary is the MAIN branch bui
 (llama.cpp-qwen38-next @ ac82c727), which natively supports every deployed flag
 (--spec-type, ngram, mtp). The tsplit-dev fork ships as RESEARCH (MIRROR_WQ, instruments);
 tonight's deployed win is a config discovery on the main build. This is deliberate.
+
+## TRUE FA FIX IMPLEMENTED 2026-09-09 00:2x — planner head-block alignment (supersedes MIRROR_WQ as the target mechanism)
+
+Scout line-pin (run 72ea1c5c) + planner read confirm the complete chain:
+
+1. Op chain (src/models/qwen4exp.cpp): :1136 wq mm → :1139-1142 Q view (view_3d, nb1=2*hd strides,
+   offset 0) → :1157-1160 gate view (offset hd*es) → :1161 cont → :1169+ rope/attn.
+2. Split flow: wq weight = AXIS_1 (llama-model.cpp:519); MUL_MAT maps weight-axis-1 → output
+   AXIS_0; each backend's slice is a COMPACTED dense [N_j, n_tokens].
+3. DEFECT: the Q/gate strided views over that interleaved layout are correct ONLY if every
+   backend's N_j rows start at a whole 2*head_dim [Q|gate] block. The planner gave attention
+   q-weights granularity {1} ("everything else" branch) — boundaries land MID-BLOCK → per-backend
+   views read gate rows as Q (structurally valid, semantically wrong). Matches the [sig]
+   instrument evidence and MIRROR_WQ's exact-recall bypass (mirrored wq → whole-block trivially).
+   Non-divisible N_j also explains the meta:1138 boot-ratio abort class.
+4. FIX (src/llama-model.cpp, granularity lambda): pattern_q_weight → granularity
+   lcm(blck_size, 2*n_embd_head_k). Every backend slice now starts at a head block; the
+   strided extraction is per-backend-correct WITHOUT mirroring (kills MIRROR_WQ's 4× redundant
+   FA FLOPs in principle — perf validation pending).
+5. STATUS: implemented + compiled clean (build-tsplit, exit 0). NOT yet runtime-validated —
+   the 1.5k reproducer + 5k/25k needle ladder need the big pool (lane :8331 serving; deferred
+   to lane-free window per mission constraint). Validation protocol: NGL=6 WITHOUT
+   GGML_META_MIRROR_WQ → 1.5k reproducer exact HIT + 25k needle HIT, vs the known broken
+   baseline (MISS 'RZAWZ'). If it passes, re-run the perf map (366→? t/s expected ≥388 since
+   the redundant FA compute drops; boot-ratio aborts at meta:1138 should also vanish for wq).
+6. STILL OPEN (separate): full-tensor boot alloc assert = meta:1880
+   GGML_ASSERT(meta_buf_ctx->bufs[i]) in ggml_backend_meta_alloc_ctx_tensors_from_buft
+   (per-backend weight-slice allocation fails — mechanism TBD; likely a zero-segment backend
+   or buffer-sizing edge in full-NGL mode).

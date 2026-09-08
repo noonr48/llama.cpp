@@ -810,6 +810,18 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
             return {blck_size_perf};
         }
 
+        // [tsplit-dev] TRUE FA fix (root-caused 2026-09-08/09, supersedes MIRROR_WQ workaround):
+        // the FA query weight (qwen4exp: wq, output rows are interleaved [Q|gate] per head)
+        // is split with granularity 1 (below) — per-backend row boundaries can land mid
+        // 2*head_dim block, and the strided-view Q/gate extraction then reads gate rows as Q
+        // (structurally valid, semantically wrong — the fluent-but-ungrounded corruption).
+        // Enforce whole-head-pair block alignment: every backend slice starts at a head block.
+        if (std::regex_match(tensor_name, pattern_q_weight)) {
+            const int64_t hd = hparams.n_embd_head_k();
+            GGML_ASSERT(segments.size() == 1);
+            return {std::lcm(blck_size, 2*hd)};
+        }
+
         // everything else
         GGML_ASSERT(segments.size() == 1);
         return {1};
