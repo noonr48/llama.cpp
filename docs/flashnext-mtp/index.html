@@ -152,6 +152,21 @@
 </ul>
 
 <h2 id="results">Quality results</h2>
+<p>
+  <strong>How these were tested</strong> (details in <a href="#methods">methodology</a>): three variants ran the
+  identical suite — same prompts, same samplers, same seeds — across 36 suite-seed runs. Each response
+  is scored on a 10-point rubric judged blind per axis; the numbers below are <em>mean scores</em>.
+  Seed-to-seed spread on this suite is on the order of a few tenths of a point, so differences of that
+  size between variants are <strong>within the margin of error</strong> — treat the three variants as
+  statistically close, not as a ranking.
+</p>
+<p>
+  The claim we stand behind is not "beats the base model" — it is <strong>zero replicated quality
+  losses</strong>: across every axis and seed, no loss against either reference replicated, i.e.
+  <strong>no noticeable quality loss at less than half the file size</strong> of the Q8_0 reference
+  (119 GB vs 188 GB). The quant doing as well as its source Q8_0 and the base is the result; the
+  small mean differences are noise, not signal.
+</p>
 
 <figure class="figure">
 <svg viewBox="0 0 720 300" role="img" aria-label="Balanced evaluation mean scores by variant">
@@ -186,26 +201,31 @@
   </g>
 </svg>
 <figcaption>
-  Overall quality means across the balanced suite (36 suite-seed runs, symmetric rules): this IQ4_NL
-  6.33 vs base 6.00 vs source Q8_0 reference 5.67. Thinking-mode probes: 10/10 for all three
-  variants. Capability-under-thinking: 7.67 (this quant) vs 8.00 (base) — no replicated loss; the
+  Mean rubric scores across the balanced suite (36 suite-seed runs, symmetric rules). Differences of
+  this magnitude sit within the suite's seed-to-seed margin of error — read this as "the IQ4_NL
+  tracks its references", not as a ranking. Thinking-mode probes: 10/10 for all three variants.
+  Capability-under-thinking: 7.67 (this quant) vs 8.00 (base) — no replicated loss; the
   standalone-capability axis was seed-unstable for all variants (4.00 vs 5.33 means, not replicated
   across seeds) and is recorded as drift, not as damage.
 </figcaption>
 </figure>
 
 <table>
-  <tr><th>Variant</th><th>Size</th><th>Overall quality</th><th>Thinking</th><th>Zero replicated losses</th></tr>
-  <tr><td><strong>This IQ4_NL</strong></td><td>119 GB</td><td><strong>6.33</strong></td><td>10/10</td><td>—</td></tr>
+  <tr><th>Variant</th><th>Size</th><th>Mean score</th><th>Thinking</th><th>Zero replicated losses</th></tr>
+  <tr><td><strong>This IQ4_NL</strong></td><td>119 GB</td><td>6.33</td><td>10/10</td><td>—</td></tr>
   <tr><td>Base model</td><td>~340 GB</td><td>6.00</td><td>10/10</td><td>reference</td></tr>
   <tr><td>Source Q8_0 reference</td><td>188 GB</td><td>5.67</td><td>10/10</td><td>reference</td></tr>
 </table>
+<p style="font-size:0.88rem;color:#596662;margin-top:-6px;">Means differ by fractions of a point — within the suite's margin of error. The takeaway is parity, not superiority.</p>
 
 <div class="note">
-  <strong>How to read this:</strong> the balanced eval does not say the Q8_0 reference is "worse" in
-  general — it says that under this suite's prompts, samplers, seeds, and rubric, our IQ4_NL
-  produced no replicated quality losses against either reference and a higher mean. We publish the
-  full methodology precisely so you can judge what that is worth for your use case.
+  <strong>How to read this:</strong> a 10-point-rubric mean difference of a few tenths between
+  variants is within this suite's margin of error — we do not claim the quant outperforms the base
+  or the source. What the evaluation establishes is narrower and more useful: under identical
+  prompts, samplers, and seeds, the IQ4_NL produced <strong>no replicated quality losses</strong>
+  against either reference — no noticeable quality loss — at 63% of the Q8_0 reference's size and
+  about a third of the base model's. If your use case needs a stronger guarantee, run your own
+  suite against the references; the methodology above is the recipe.
 </div>
 
 <h2 id="perf">Performance engineering</h2>
@@ -247,23 +267,21 @@
   <text x="20" y="24" font-size="15" font-weight="700" fill="#17211f">Draft depth vs decode speed (tok/s, observed ranges)</text>
   <line x1="150" y1="46" x2="150" y2="210" stroke="#d9dfdb"/><line x1="150" y1="210" x2="690" y2="210" stroke="#d9dfdb"/>
   <line x1="150" y1="128" x2="690" y2="128" stroke="#d9dfdb" stroke-dasharray="3 4"/>
-  <!-- scale 40-60 -> y = 210 - (v-40)*8 ; n1 54-58 -> 62-118, mid 88 ; n2 48.7-53.8 -> 110-150, mid 130 ; n3 43.5-46.2 -> 152-174, mid 163 -->
-  <rect x="220" y="62" width="110" height="56" fill="#126b5d" rx="2" opacity="0.85"/>
-  <rect x="224" y="110" width="102" height="8" fill="#596662" opacity="0.5" rx="2"/>
-  <text class="v" x="240" y="54">54 – 58</text>
-  <rect x="390" y="110" width="110" height="40" fill="#9b5a19" rx="2" opacity="0.85"/>
-  <rect x="394" y="144" width="102" height="16" fill="#596662" opacity="0.5" rx="2"/>
-  <text class="v" x="404" y="102">48.7 – 53.8</text>
-  <rect x="560" y="152" width="110" height="22" fill="#8a8f8c" rx="2" opacity="0.85"/>
-  <rect x="564" y="168" width="102" height="6" fill="#596662" opacity="0.5" rx="2"/>
-  <text class="v" x="580" y="144">43.5 – 46.2</text>
+  <!-- scale: y = 210 - (v-40)*8 ; bars span the full observed min-max range -->
+  <!-- n1 54-58 -> y 66..98 ; n2 48.7-53.8 -> y 99.6..140.4 ; n3 43.5-46.2 -> y 160.4..182 -->
+  <rect x="220" y="66" width="110" height="32" fill="#126b5d" rx="2" opacity="0.9"/>
+  <text class="v" x="240" y="58">54 – 58</text>
+  <rect x="390" y="99.6" width="110" height="40.8" fill="#9b5a19" rx="2" opacity="0.9"/>
+  <text class="v" x="404" y="92">48.7 – 53.8</text>
+  <rect x="560" y="160.4" width="110" height="21.6" fill="#8a8f8c" rx="2" opacity="0.9"/>
+  <text class="v" x="580" y="152">43.5 – 46.2</text>
   <text class="b" x="240" y="228" fill="#596662">depth 1</text>
   <text class="b" x="410" y="228" fill="#596662">depth 2</text>
   <text class="b" x="580" y="228" fill="#596662">depth 3</text>
 </svg>
 <figcaption>
   Deeper draft chains from a 1-layer head decay acceptance monotonically — depth 1 is optimal for
-  this architecture. Solid bars are observed mid-ranges; gray bands show full observed min–max.
+  this architecture. Bars span each depth's full observed min–max range (fresh-prompt runs).
 </figcaption>
 </figure>
 
