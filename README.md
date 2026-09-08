@@ -1,3 +1,9 @@
+> [!NOTE]
+> **This branch: Flash-Next (qwen4exp) MTP speculative decoding.** Adds working
+> NextN/MTP speculative decode for Qwen3.8-Flash-Next models plus QSA/PLE decode
+> performance paths and server checkpoint/MTP-rollback fixes. See
+> [FLASHNEXT_MTP.md](./FLASHNEXT_MTP.md) for features, measured numbers, and usage.
+
 # llama.cpp
 
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
