@@ -230,9 +230,15 @@
 
 <h2 id="perf">Performance engineering</h2>
 <p>
-  All measurements below: llama.cpp layer-split across a mixed 7-GPU set (1× RTX 5090 + 3× RTX 3090 +
-  3× RTX 5060 Ti), 262,144-token context, fp32 KV, fresh 25k-token prompts, 600-token continuous
-  decode means. See the <a href="#hardware">hardware note</a> for the PCIe caveat.
+  Measurement conditions, stated precisely: <strong>prefill</strong> numbers come from fresh
+  25k-token prompts (no cache reuse). <strong>Decode</strong> numbers are 600-token continuous
+  generations; the draft-depth sweep specifically used a single fixed short chat prompt
+  (≈40 tokens) — so its context stayed <strong>under ~700 tokens throughout</strong>. Decode slows
+  as the KV cache fills, so treat all decode figures here as short-context results; deep-context
+  decode on a 262k-context server will run lower. Sampling pinned at the model author's thinking-mode
+  settings (temperature 1.0, top-p 0.95, top-k 20). All runs: llama.cpp layer-split across a mixed
+  7-GPU set (1× RTX 5090 + 3× RTX 3090 + 3× RTX 5060 Ti), 262,144-token context, fp32 KV. See the
+  <a href="#hardware">hardware note</a> for the PCIe caveat.
 </p>
 
 <figure class="figure">
@@ -281,7 +287,9 @@
 </svg>
 <figcaption>
   Deeper draft chains from a 1-layer head decay acceptance monotonically — depth 1 is optimal for
-  this architecture. Bars span each depth's full observed min–max range (fresh-prompt runs).
+  this architecture. Bars span each depth's full observed min–max range (600-token generations on a
+  fixed ≈40-token chat prompt: context under ~700 tokens — short-context decode; expect lower tok/s
+  as context fills).
 </figcaption>
 </figure>
 
@@ -320,9 +328,13 @@
 <ul>
   <li><strong>The fork is upstream llama.cpp plus a scoped delta</strong> — every model and quant type
   stock llama.cpp runs, the fork runs unchanged.</li>
-  <li><strong>Flash-Next (qwen4exp) models of any provenance</strong> get MTP speculative decoding:
-  draft weights can come from in-file MTP tensors, a sidecar draft GGUF (our layout), or
-  draft-head-only GGUFs in the unsloth layout.</li>
+  <li><strong>No custom kernel required.</strong> The model runs in <em>standard llama.cpp</em> —
+  qwen4exp architecture support is upstream, so any recent stock build loads the backbone. (Unlike
+  our earlier Qwen3.6 RYS GGUFs, which required a custom loader.) The fork branch is
+  <strong>optional</strong>: it adds MTP speculative decoding and the performance paths above.</li>
+  <li><strong>Flash-Next (qwen4exp) models of any provenance</strong> get MTP speculative decoding
+  when run on the fork: draft weights can come from in-file MTP tensors, a sidecar draft GGUF
+  (our layout), or draft-head-only GGUFs in the unsloth layout.</li>
   <li><strong>Any standard GGUF quant</strong> of Flash-Next works (Q8_0, Q4_K_M, IQ family, …);
   ours is one specific quality-biased IQ4_NL build.</li>
   <li><strong>Server improvements apply to all models</strong>: persistent prompt-checkpoint
