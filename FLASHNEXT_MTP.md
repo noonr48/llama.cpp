@@ -84,6 +84,10 @@ expect better numbers; treat ours as a conservative floor.
 - Not upstream; qwen4exp architecture support **is** already in upstream master, so
   the plain model runs fine on mainline — this branch is for the speculative-decode
   and performance paths.
+- **Tensor-split mode** (per-tensor multi-GPU splitting for ~2× prefill) lives on the
+  [`qwen38-tsplit-dev`](https://github.com/noonr48/llama.cpp/blob/qwen38-tsplit-dev/TENSOR_SPLIT.md)
+  research branch — correct as of 2026-09-09 (GQA head-correspondence fix,
+  `GGML_META_GQA_FIX=1`), see that branch's TENSOR_SPLIT.md for numbers and usage.
 - License: MIT, inherited from llama.cpp. Model weights chain: Apache-2.0
   (see the model repo's `MODEL_PROVENANCE.json`).
 

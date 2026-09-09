@@ -321,7 +321,7 @@
   <tr><td>GPU topology</td><td>12 → 9 → 7 GPU layer-split</td><td>Smaller fast-mix beat larger pools (9 GPU: 51.2 t/s; 7 GPU: 54.4 t/s baseline) — inter-GPU hops, not compute, were the wall.</td></tr>
   <tr><td>MTP depth</td><td>n1 / n2 / n3</td><td>n1 optimal; deeper chains monotonically worse (chart above).</td></tr>
   <tr><td>Spec combiners</td><td>MTP alone vs +n-gram</td><td>Combined wins both axes (+8% decode, +3% prefill, fresh-prompt A/B).</td></tr>
-  <tr><td>Tensor-split serving</td><td>Splitting individual layers across GPUs for prefill throughput</td><td><strong>Research branch, not shipped.</strong> A corruption bug in the split path was root-caused (full-attention layers on the composite device) and fixed, but the end-to-end path is still gated behind a needle-recall pass; not part of this release.</td></tr>
+  <tr><td>Tensor-split serving</td><td>Splitting individual graph tensors across GPUs for prefill throughput</td><td><strong>FIXED — available on the research branch</strong> (<a href="https://github.com/noonr48/llama.cpp/blob/qwen38-tsplit-dev/TENSOR_SPLIT.md">qwen38-tsplit-dev</a>). The multi-week corruption bug was root-caused (a GQA head-correspondence loss: split Q + mirrored K/V made each GPU pair queries with the wrong KV heads) and fixed (per-backend K/V origin aliases, <code>GGML_META_GQA_FIX=1</code>). Exact-recall needles pass in hybrid and full-tensor modes; a quality battery shows parity with layer mode. 25k prefill ~875 tok/s = 2.0× the layer baseline on the same 4-GPU pool (c 32768 context ceiling — cache VRAM; longer contexts need cache-placement work). Not in this release branch's binaries; serve it from the research branch.</td></tr>
 </table>
 
 <h2 id="supported">What's supported</h2>
