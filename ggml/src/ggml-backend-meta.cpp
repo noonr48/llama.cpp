@@ -1361,6 +1361,54 @@ static enum ggml_status ggml_backend_meta_buffer_init_tensor_impl(ggml_backend_m
             }
         }
 
+        // [gqa-fix] consult 2026-09-09 + [gqa-probe] MISMATCH: FLASH_ATTN_EXT with head-split
+        // Q (axis 2) and MIRRORED multi-head K/V — the kernel derives the GQA ratio from LOCAL
+        // shapes (k = h/(H_j/K)), pairing queries with wrong KV heads. Alias this backend's K/V
+        // into the mirrored storage at the correct global head origin: first_KV = P_j/G,
+        // local KV heads = H_j/G, offset = first_KV * nb[2], strides unchanged. Read-only.
+        if (getenv("GGML_META_GQA_FIX") && tensor->op == GGML_OP_FLASH_ATTN_EXT
+                && t_ij->src[0] && t_ij->src[1] && t_ij->src[2]
+                && t_ij->src[1] != t_ij->src[0]) {
+            const auto q_ss = ggml_backend_meta_get_split_state(tensor->src[0], /*assume_sync=*/true);
+            const auto k_ss = ggml_backend_meta_get_split_state(tensor->src[1], /*assume_sync=*/true);
+            if (q_ss.axis == 2 && k_ss.axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
+                const int64_t H  = tensor->src[0]->ne[2];
+                const int64_t K  = tensor->src[1]->ne[2];
+                const int64_t Hj = t_ij->src[0]->ne[2];
+                if (K > 1 && Hj > 0 && Hj < H && (H % K) == 0) {
+                    const int64_t G = H / K;
+                    if (Hj % G == 0) {
+                        int64_t P = 0;
+                        for (size_t jj = 0; jj < j; jj++) {
+                            for (size_t s = 0; s < q_ss.n_segments; s++) {
+                                P += q_ss.ne[s*n_simple_bufs + jj] * q_ss.nr[s];
+                            }
+                        }
+                        if (P % G == 0) {
+                            const int64_t first_kv = P / G;
+                            const int64_t local_kv = Hj / G;
+                            for (int s = 1; s <= 2; s++) {
+                                ggml_tensor * kv_full = t_ij->src[s];
+                                ggml_tensor * alias = ggml_new_tensor(simple_ctx, kv_full->type, GGML_MAX_DIMS, kv_full->ne);
+                                memcpy(alias->nb, kv_full->nb, sizeof(alias->nb));
+                                alias->ne[2] = local_kv;
+                                alias->op = GGML_OP_VIEW;
+                                alias->flags = kv_full->flags;
+                                alias->view_src = kv_full;
+                                alias->view_offs = (size_t)first_kv * kv_full->nb[2];
+                                alias->data = (char *)kv_full->data + alias->view_offs;
+                                alias->buffer = kv_full->buffer;
+                                ggml_set_name(alias, kv_full->name);
+                                t_ij->src[s] = alias;
+                            }
+                            fprintf(stderr, "[gqa-fix] FA %s backend %zu: aliased K/V to heads [%lld, %lld) of %lld\n",
+                                    tensor->name, j, (long long)first_kv, (long long)(first_kv + local_kv), (long long)K);
+                        }
+                    }
+                }
+            }
+        }
+
         simple_tensors.push_back(t_ij);
     }
 
@@ -2839,6 +2887,44 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                         }
                     }
                 }
+            }
+        }
+    }
+    // [gqa-probe] head-correspondence check at the first FLASH_ATTN_EXT (consult 2026-09-09):
+    // with head-split Q and mirrored K/V the kernel derives gqa_ratio from LOCAL shapes
+    // (fattn-vec.cuh: k = h/(ne02/ne12)); the correct global mapping is (P_j+h)/G.
+    // Fires once per process when GGML_META_GQA_PROBE is set.
+    {
+        static bool gqa_probe_done = false;
+        if (getenv("GGML_META_GQA_PROBE") && !gqa_probe_done) {
+            for (int i = 0; i < cgraph->n_nodes; i++) {
+                ggml_tensor * node = cgraph->nodes[i];
+                if (node->op != GGML_OP_FLASH_ATTN_EXT) continue;
+                gqa_probe_done = true;
+                const int64_t H  = node->src[0]->ne[2];
+                const int64_t K  = node->src[1]->ne[2];
+                const int64_t G  = (K > 0) ? H / K : 0;
+                fprintf(stderr, "[gqa-probe] FA node=%d name=%s global Q heads=%lld KV heads=%lld G=%lld\n",
+                        i, node->name, (long long)H, (long long)K, (long long)G);
+                int64_t P = 0;
+                for (size_t j = 0; j < n_backends; j++) {
+                    auto & bcj = backend_ctx->backend_configs[j];
+                    ggml_tensor * w = (bcj.nodes.size() > (size_t)i) ? bcj.nodes[i] : nullptr;
+                    if (!w || !w->src[0] || !w->src[1]) { fprintf(stderr, "[gqa-probe]   backend %zu: NO WRAPPER\n", j); P += 0; continue; }
+                    const int64_t Hj = w->src[0]->ne[2];
+                    const int64_t Kj = w->src[1]->ne[2];
+                    const bool comp = w->flags & GGML_TENSOR_FLAG_COMPUTE;
+                    bool mismatch = false;
+                    if (Kj > 0 && Hj > 0 && Hj != H && Kj == K && K > 1) {
+                        const int64_t ratio = Hj / Kj;
+                        if (P % G != 0 || Hj % G != 0 || ratio != G) mismatch = true;
+                    }
+                    fprintf(stderr, "[gqa-probe]   backend %zu: Q %lld/%lld heads, KV %lld/%lld heads, P_j=%lld compute=%d => %s\n",
+                            j, (long long)Hj, (long long)H, (long long)Kj, (long long)K, (long long)P, (int)comp,
+                            mismatch ? "MISMATCH (kernel pairs wrong KV heads)" : "ok");
+                    P += Hj;
+                }
+                break; // first FA node only
             }
         }
     }

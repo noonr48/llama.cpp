@@ -22,7 +22,7 @@ sleep 150
 unset GGML_META_MIRROR_WQ
 
 echo "== booting -ngl 6 contiguous hybrid (NO MIRROR_WQ), fix ccf27ca20 =="
-CUDA_VISIBLE_DEVICES="$D4" $BIN -m $MODEL -sm tensor -ts "1.6,1,1,1" -ngl 6 -fa on -c 32768 \
+GGML_META_GQA_FIX=1 GGML_META_GQA_PROBE=1 CUDA_VISIBLE_DEVICES="$D4" $BIN -m $MODEL -sm tensor -ts "1.6,1,1,1" -ngl 6 -fa on -c 32768 \
   -ctk f32 -ctv f32 -np 1 --no-kv-unified \
   --reasoning-format deepseek --reasoning-preserve --host 127.0.0.1 --port 8336 > /tmp/true-fa-test.log 2>&1 &
 SRV=$!

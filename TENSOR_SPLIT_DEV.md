@@ -1400,3 +1400,32 @@ NEXT STEPS (consult's recipe):
     stronger causal evidence than MIRROR_WQ (which also removes the FA output reduction).
 Secondary hazard noted (rank lower): meta:2580-2583 fallback allreduce zeroes disabled
 contributors via SCALE 0.0 — 0*NaN=NaN can poison reduction IF nonfinites present.
+
+## *** GQA FIX LANDED 2026-09-09 13:00 — THE TENSOR-SPLIT CORRUPTION IS FIXED ***
+
+Probe (GGML_META_GQA_PROBE, first FLASH_ATTN_EXT): global Q=24 heads, KV=2, G=12;
+backend 0: Q 12/24 (P_j=0), backend 1: Q 12/24 (P_j=12), both with FULL mirrored KV 2/2
+=> MISMATCH confirmed (kernel ratio 12/2=6 != G=12; every backend pairs its 12 queries
+across BOTH KV heads instead of its one correct group).
+
+FIX (GGML_META_GQA_FIX, in the wrapper src-remap block, env-gated): for FLASH_ATTN_EXT
+with head-split Q (axis 2) + mirrored multi-head K/V, alias each backend's K/V into the
+mirrored storage at the correct global origin — first_KV = P_j/G, local KV = H_j/G,
+offset = first_KV*nb[2], strides kept, read-only view tensors (op=VIEW, view_src=kv_full).
+[entity: gqa-fix] lines confirm: backend 0 -> KV head [0,1), backend 1 -> [1,2) of 2,
+across all FA nodes (node_7276/7298/7937) and every graph rebuild (58x).
+
+VALIDATION (validate_true_fa.sh, -ngl 6, D4, NO MIRROR_WQ, Q and wo STILL SPLIT):
+  Reproducer 1.5k (1554 tok): HIT exact 'MAPLE-SYRUP-7461'   (was 'RZAWZ')
+  Fresh 25k needle (25213 tok, 99.6s): HIT exact 'HAWK-AMETHYST-8842' (was 'RZAWZ')
+  0 asserts; lane self-restored 13:02:16.
+Prefill this run: ~253 t/s at 25k on the 4-GPU NGL=6 hybrid (the perf map for full
+tensor-split prefill — the 1045 t/s class — is the follow-up arc, now UNBLOCKED).
+
+ROOT-CAUSE CHAIN (final): FA-on-Meta corruption = split Q + mirrored K/V loses the global
+GQA head correspondence (kernel derives the ratio from local shapes, fattn-vec.cuh:106-111);
+fixed by per-backend K/V origin aliases. Prior fixes that remain valid hardening:
+r_cache/KV-mirror/KV-proj-mirror/s_cache pairings; ccf27ca20 q-weight alignment is dead
+code for FA q-weights (shadowed by the earlier lcm(2*n_embd_q,...) return) — harmless.
+NEXT ARC (unblocked): full-tensor mode NGL=49/99 (the meta:1880 alloc assert), then the
+two-mode lane (tensor-split prefill + layer-split decode) with the honest perf map.
