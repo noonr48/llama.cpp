@@ -1455,3 +1455,23 @@ TWO-MODE LANE STATE: tensor-split prefill (875 t/s @ 25k, exact recall) + layer-
 decode (54-59 t/s, existing lane) both proven. REMAINING before deploy: longer-length
 prefill points (50k/100k) + controlled fresh-prompt A/B vs layer mode on the same pool +
 balanced battery under GQA_FIX + the deploy decision (research binary + env on a toggle).
+
+## PERF MAP CAPACITY RESULT 2026-09-09 13:5x — full-tensor ctx ceiling ~32k on this fleet
+
+50k/100k needle attempts (both fresh prompts, GQA_FIX on):
+- 4-GPU pool, -c 131072: meta alloc FAILED backend CUDA1, 48 FA/indexer cache tensors
+  4.83GB/backend (2304MB slice OOM on the 24GB 3090 after its weight share; ~1.2GB free).
+  At -c 32768 the same caches are 1.2GB/backend and FIT (the proven working point).
+- 12-GPU pool (-ts 1.6,1,1,1,0.55x8, -c 131072): OOM on device 5 (1.23GB alloc failed,
+  meta:1868 assert in the generic meta allocator — which requests EQUAL sizes from every
+  backend; the equal-size-for-all semantics is itself a hazard the consult noted).
+
+HONEST PERF MAP (fresh prompts, exact recall throughout, GQA_FIX):
+  25k @ full-tensor D4 c 32768: ~875 t/s (2.0x the deployed 7-GPU layer lane's 437;
+                                   1.8x the same-pool 4-GPU layer reference's 489)
+  50k/100k: BLOCKED by FA-cache VRAM on both pool shapes — needs cache placement work
+  (FA caches off-composite / per-layer routing) or a hybrid NGL tune. Not a correctness
+  issue: the working point serves <=32k prompts exactly.
+DEPLOY DECISION (owner): the tensor-prefill toggle would serve the RESEARCH binary
+(tsplit-dev build + GGML_META_GQA_FIX env) at c 32768 — pairs with the layer lane for
+longer prompts. Main-build deployment requires porting the fix to the deployed branch.
