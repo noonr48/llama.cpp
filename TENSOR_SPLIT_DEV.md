@@ -1361,3 +1361,42 @@ DUMP FINDINGS (/tmp/true-fa-test.log, 59 hits per tensor per backend):
 - NEXT: (a) verify the k_conv/v_conv scaled offsets are semantically correct for
   token-axis splits (hand-compute one); (b) web GPT consult (owner-sanctioned) with
   the public fork + this evidence chain for an independent read on the dead-FA cause.
+
+## WEB-GPT CONSULT 2026-09-09 12:1x (proflow, both phases green) — GQA head-correspondence defect named; two hypotheses killed by arithmetic
+
+REVIEWED: this branch @ d9ece0bb9 (repo read via GitHub connector).
+
+FINDING 1 — MOST PROBABLE DEFECT: handle_flash_attn_ext (meta:822-826) accepts head-split Q
+with fully MIRRORED K/V, but the wrapper does NOT adapt the K/V head range to the local Q
+slice. The CUDA kernel derives gqa_ratio from LOCAL shapes (fattn-vec.cuh:106-111:
+k = head/(ne02/ne12); MMA dispatch likewise) => backend j owning global Q heads [P_j, P_j+H_j)
+computes k_actual = h/(H_j/K) instead of k_expected = (P_j+h)/G — queries pair with WRONG
+K/V heads. Fits ALL evidence: K/V bit-identical (consumers select wrong heads), alignment
+irrelevant, MIRROR_WQ works (full head count restores ordinary GQA math), NGL=5 {47} HIT =
+margin luck (its own attn_output was already wrong). NOTE: identical tokens != dead FA —
+argmax equality is not an activation measurement (interpretation corrected).
+
+FINDING 2 — ccf27ca20 planner branch is DEAD CODE for FA q-weights: an earlier return
+{lcm(2*n_embd_q, blck_size_perf)} (n_embd_q = n_gqa*head_dim, already a multiple of 2*hd)
+shadows the late clause => the "granularity was {1}" premise was WRONG; clean-boot
+attribution to ccf27ca20 unproven (needs a branch-selection witness print).
+
+FINDING 3 — GDN conv view scalings are CORRECT-BY-DESIGN: split_dim=1 is the HEAD axis
+(not tokens); segmented Q/K/V compaction arithmetic matches EXACTLY (K 3 heads: 8192*3/16
+=1536B = 3*128*4; V 9 heads: 16384*9/48 = 3072B = 2*3*128*4). NGL=5 contradiction resolved.
+Also: the [view-scale] print shows the PRE-scale value (branch-entry witness only).
+
+NEXT STEPS (consult's recipe):
+(1) CHEAPEST PROBE: head-correspondence assert at the first FLASH_ATTN_EXT in
+    ggml_backend_meta_graph_compute (after per-backend node population): per backend print
+    global_Q_heads, global_KV_heads, local heads, global_Q_begin (cumulative, not
+    equal-split), COMPUTE flag; check expected_KV = (P_j+h)/G vs kernel_KV = h/(H_j/K);
+    first mismatch per backend. No GPU run needed beyond boot+one token.
+(2) CAUSAL A/B: for Q slices aligned to whole GQA groups (P_j mod G == 0, H_j mod G == 0),
+    give each backend's FA op READ-ONLY K/V ALIASES into the mirrored storage:
+    first_KV_head = P_j/G, local KV heads = H_j/G, advance alias by
+    first_KV_head * original_nb[2], keep storage strides. Kernel then recovers ratio G with
+    the correct origin. Run 1.5k repro with Q and wo STILL split — recovery is much
+    stronger causal evidence than MIRROR_WQ (which also removes the FA output reduction).
+Secondary hazard noted (rank lower): meta:2580-2583 fallback allreduce zeroes disabled
+contributors via SCALE 0.0 — 0*NaN=NaN can poison reduction IF nonfinites present.
