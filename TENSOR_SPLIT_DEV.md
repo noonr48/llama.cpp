@@ -1322,3 +1322,23 @@ NEXT STEP: instrument meta:1331-1355 on the 1.5k repro — dump each backend's w
 (view_src slice base, view_offs, nb) for Qcur/gate views of ONE FA layer and hand-compute
 the expected per-backend extraction; fix the anchoring; re-run this exact script
 (validate_true_fa.sh at repo root).
+
+## WRAPPER HYPOTHESIS SHARPENED 2026-09-09 11:5x — gate-view offset scaling misfire (code-read)
+
+Read of meta:1304-1365 (wrapper creation) isolates a concrete suspect matching the dead-FA
+signature: the split_internal_offset heuristic (:1339-1353). The gate view carries
+view_offs = hd*es (128*4 = 512B, selects the odd [gate] block inside each head pair).
+Heuristic test 1: view_offs(512) <= view_src->nb[split_axis=0](=es=4)? NO.
+Dim-size loop: no dim qualifies. => split_internal_offset=FALSE => the code SCALES the
+offset per backend: view_offs *= ne[split]/ne_global = hd*es * heads_j/n_head — a
+non-integral byte offset landing MID-ROW: every backend's gate view reads misphased
+bytes. Q view (offset 0) is unaffected (0 scales to 0). Wrong-phase gate => sigmoid gate
+values garbage => gated attention output effectively destroyed => input-independent
+collapse (RZAWZ). FITS THE SIGNATURE.
+Second unverified region: stride handling at meta:~1280-1303 (the nb[] fill before the
+copied block) — verify per-backend nb[1] is rescaled to the compacted slice (N_j*es) not
+the global row pitch.
+NEXT (in order): (1) instrument :1339-1353 — dump j, name, view_offs before/after,
+split_internal_offset for every view whose view_src name matches Qcur/gate; (2) fix:
+interleave-internal offsets (view_offs < view_src row pitch && integral multiple of
+interleave block) must NEVER scale; (3) rebuild + re-run validate_true_fa.sh.
