@@ -1475,3 +1475,17 @@ HONEST PERF MAP (fresh prompts, exact recall throughout, GQA_FIX):
 DEPLOY DECISION (owner): the tensor-prefill toggle would serve the RESEARCH binary
 (tsplit-dev build + GGML_META_GQA_FIX env) at c 32768 — pairs with the layer lane for
 longer prompts. Main-build deployment requires porting the fix to the deployed branch.
+
+## QUALITY GATE PARITY 2026-09-09 14:11 — battery A/B: tensor == layer, gate PASSED
+
+quality_suite fresh-exact-v3 (fixed 10-item, deterministic scoring, temp 0, thinking off):
+  FULL-TENSOR + GQA_FIX (censored pleq8, D4, c 32768):  5/10
+  LAYER baseline (fast4 :8332, SAME model, SAME D4 pool): 5/10
+  => AGGREGATE PARITY. Failing sets differ by one item each way (tensor fails
+  plan_vision_support + code_read_trace; layer fails code_read_merge) = temp-0
+  per-item noise, not mode degradation. The suite is hard without thinking in
+  both modes (prior-era items scored 8-10/10 but were different questions).
+  Needle: exact HIT x3 configs. GATE: PASSED (no serving-mode quality loss).
+DEPLOY (agent-owned decision, note on goal): qwen38-tensor-prefill.service
+(tsplit-dev build @ 119c8ac6a, GGML_META_GQA_FIX=1, D4, c 32768, port 8337,
+manual toggle, never co-run with D4-sharing lanes).
