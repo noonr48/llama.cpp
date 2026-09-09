@@ -1342,3 +1342,22 @@ NEXT (in order): (1) instrument :1339-1353 — dump j, name, view_offs before/af
 split_internal_offset for every view whose view_src name matches Qcur/gate; (2) fix:
 interleave-internal offsets (view_offs < view_src row pitch && integral multiple of
 interleave block) must NEVER scale; (3) rebuild + re-run validate_true_fa.sh.
+
+## VIEW-SCALE DUMP RESULT 2026-09-09 12:08 — gate-view hypothesis FALSIFIED; GDN conv views named
+
+Instrumented run (log-only fprintf in the !split_internal_offset branch, build 12:04,
+same -ngl 6 protocol): STILL 'RZAWZ' MISS both probes (expected — no fix, only logging).
+DUMP FINDINGS (/tmp/true-fa-test.log, 59 hits per tensor per backend):
+- NO FA Q/gate views appear in the scaling branch — the gate view (view_offs=hd*es)
+  classifies as split_internal via the dim-size loop (dim 0: ne0*nb0=512 <= 512 < nb[1])
+  => my gate-offset-misclassification hypothesis is FALSIFIED. FA offsets are fine.
+- What DOES scale: k_conv-44/45/46 (view_offs=8192, split_dim=1, ne_b=3-4 vs ne_g=16)
+  and v_conv_predelta-44/45/46 (view_offs=16384, split_dim=1, ne_b=9-12 vs ne_g=48)
+  — GDN conv-state views of layers 44-46 (the GDN block on the Meta composite),
+  offsets scaled along the TOKEN axis, rebuilt every graph (59x).
+- CONTRADICTION to resolve: NGL=5 (layers 44-48: same 3 GDN + 1 FA) historically HIT
+  with these same scalings present. Either the scalings are correct-by-design for
+  token-split conv state, or something changed since the NGL=5 run.
+- NEXT: (a) verify the k_conv/v_conv scaled offsets are semantically correct for
+  token-axis splits (hand-compute one); (b) web GPT consult (owner-sanctioned) with
+  the public fork + this evidence chain for an independent read on the dead-FA cause.

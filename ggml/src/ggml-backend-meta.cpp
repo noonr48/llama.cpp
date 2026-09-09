@@ -1328,6 +1328,12 @@ static enum ggml_status ggml_backend_meta_buffer_init_tensor_impl(ggml_backend_m
                     }
                 }
                 if (!split_internal_offset) {
+                    // [tsplit-dev] view-scale diagnostic: interleave-phase offsets (e.g. qwen4exp [Q|gate] gate views,
+                    // offset = hd*es inside one 2*hd head block) must NEVER scale per backend — if such a name
+                    // appears here with a non-integral scaled offset, that is the FA dead-output defect.
+                    fprintf(stderr, "[view-scale] backend j=%d name=%s view_offs=%zu scaled->=%zu split_dim=%d ne_b=%lld ne_g=%lld\n",
+                            (int)j, tensor->name, (size_t)tensor->view_offs, (size_t)t_ij->view_offs,
+                            split_dim, (long long)ne[split_dim], (long long)tensor->ne[split_dim]);
                     t_ij->view_offs = t_ij->view_offs * ne[split_dim]/tensor->ne[split_dim];
                 }
             }
