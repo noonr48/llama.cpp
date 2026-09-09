@@ -1297,3 +1297,28 @@ Scout line-pin (run 72ea1c5c) + planner read confirm the complete chain:
    GGML_ASSERT(meta_buf_ctx->bufs[i]) in ggml_backend_meta_alloc_ctx_tensors_from_buft
    (per-backend weight-slice allocation fails — mechanism TBD; likely a zero-segment backend
    or buffer-sizing edge in full-NGL mode).
+
+## TRUE-FA VALIDATION RESULT 2026-09-09 11:35-38 — honest negative: alignment alone insufficient
+
+Run: plain -ngl 6 contiguous hybrid (layers 43-48 on the Meta composite), D4 pool
+(5090+3x3090, -ts 1.6,1,1,1), censored pleq8, c 32768, fp32 KV, reasoning flags, NO
+GGML_META_MIRROR_WQ, build-tsplit @ ccf27ca20 (planner head-block alignment included).
+- Boot: CLEAN, 0 asserts (the meta:1138 boot-ratio abort class is GONE — alignment's
+  structural effect is real: ne[j] = N_j/(2*hd) is now always integral by construction).
+- Reproducer 1.5k (1554 tok): MISS 'RZAWZ' — the EXACT historical broken signature.
+- Fresh 25k needle (25213 tok, 98.7s): MISS 'RZAWZ' — SAME degenerate string on a
+  DIFFERENT prompt => the output is INPUT-INDEPENDENT at temp 0: the FA layers'
+  contribution collapses to a constant attractor, not subtly-wrong attention.
+  (New diagnostic: 'RZAWZ' across prompts = dead/zeroed contribution, not mis-sliced Q.)
+- Lane :8331 self-restored 11:38:02.
+
+CONCLUSION: planner head-block alignment (ccf27ca20) is necessary-class hardening but NOT
+the corruption fix. The remaining defect is the WRAPPER side the scout pinned: the
+per-backend view anchoring for strided views over split interleaved tensors
+(ggml-backend-meta.cpp:1331-1355 region — split_internal_offset heuristic + view_src
+anchoring), which must map each backend's head-block-aligned slice to the correct
+interleave-phase rows. MIRROR_WQ remains the only exact-recall path.
+NEXT STEP: instrument meta:1331-1355 on the 1.5k repro — dump each backend's wrapper
+(view_src slice base, view_offs, nb) for Qcur/gate views of ONE FA layer and hand-compute
+the expected per-backend extraction; fix the anchoring; re-run this exact script
+(validate_true_fa.sh at repo root).
