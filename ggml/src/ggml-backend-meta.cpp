@@ -1362,7 +1362,7 @@ static enum ggml_status ggml_backend_meta_buffer_init_tensor_impl(ggml_backend_m
         }
 
         // [gqa-fix] consult 2026-09-09 + [gqa-probe] MISMATCH: FLASH_ATTN_EXT with head-split
-        // Q (axis 2) and MIRRORED multi-head K/V — the kernel derives the GQA ratio from LOCAL
+        // Q (axis 2) and MIRRORED multi-head K/V -- the kernel derives the GQA ratio from LOCAL
         // shapes (k = h/(H_j/K)), pairing queries with wrong KV heads. Alias this backend's K/V
         // into the mirrored storage at the correct global head origin: first_KV = P_j/G,
         // local KV heads = H_j/G, offset = first_KV * nb[2], strides unchanged. Read-only.
@@ -1371,7 +1371,8 @@ static enum ggml_status ggml_backend_meta_buffer_init_tensor_impl(ggml_backend_m
                 && t_ij->src[1] != t_ij->src[0]) {
             const auto q_ss = ggml_backend_meta_get_split_state(tensor->src[0], /*assume_sync=*/true);
             const auto k_ss = ggml_backend_meta_get_split_state(tensor->src[1], /*assume_sync=*/true);
-            if (q_ss.axis == 2 && k_ss.axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED) {
+            if (q_ss.axis == 2 && k_ss.axis == GGML_BACKEND_SPLIT_AXIS_MIRRORED
+                    && q_ss.n_segments == 1 && q_ss.nr[0] == 1) { // contiguous split only: first_kv=P/G math is wrong for multi-segment layouts (reviewer F1)
                 const int64_t H  = tensor->src[0]->ne[2];
                 const int64_t K  = tensor->src[1]->ne[2];
                 const int64_t Hj = t_ij->src[0]->ne[2];
@@ -2904,8 +2905,10 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
                 const int64_t H  = node->src[0]->ne[2];
                 const int64_t K  = node->src[1]->ne[2];
                 const int64_t G  = (K > 0) ? H / K : 0;
-                fprintf(stderr, "[gqa-probe] FA node=%d name=%s global Q heads=%lld KV heads=%lld G=%lld\n",
-                        i, node->name, (long long)H, (long long)K, (long long)G);
+                const auto q_ss2 = ggml_backend_meta_get_split_state(node->src[0], /*assume_sync=*/true);
+                fprintf(stderr, "[gqa-probe] FA node=%d name=%s global Q heads=%lld KV heads=%lld G=%lld nseg=%d nr=%lld\n",
+                        i, node->name, (long long)H, (long long)K, (long long)G,
+                        (int)q_ss2.n_segments, (long long)(q_ss2.n_segments > 0 ? q_ss2.nr[0] : -1));
                 int64_t P = 0;
                 for (size_t j = 0; j < n_backends; j++) {
                     auto & bcj = backend_ctx->backend_configs[j];

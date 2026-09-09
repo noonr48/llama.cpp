@@ -1429,3 +1429,29 @@ r_cache/KV-mirror/KV-proj-mirror/s_cache pairings; ccf27ca20 q-weight alignment 
 code for FA q-weights (shadowed by the earlier lcm(2*n_embd_q,...) return) — harmless.
 NEXT ARC (unblocked): full-tensor mode NGL=49/99 (the meta:1880 alloc assert), then the
 two-mode lane (tensor-split prefill + layer-split decode) with the honest perf map.
+
+## REPAIR WAVE + FULL-TENSOR RESULT 2026-09-09 13:2x-13:41 — two-mode lane proven end-to-end
+
+REVIEW (xna-reviewer, spec lens) verdict was blocked; all findings repaired:
+F1: gqa-fix now guarded to contiguous splits only (q_ss.n_segments==1 && nr[0]==1) —
+    first_kv=P/G math is wrong for multi-segment layouts; probe now prints nseg/nr.
+F2: em-dash -> ASCII. Re-validation after repair: BOTH probes still exact HIT
+    (MAPLE-SYRUP-7461 + HAWK-AMETHYST-8842, 0 asserts, needle 69.1s @ NGL=6).
+
+FULL-TENSOR (-ngl 999 -sm tensor, D4 pool, GQA_FIX+PROBE, c 32768, fp32 KV):
+- Boots CLEAN, model loaded ~37s, 0 asserts — the meta:1880 alloc-assert class is GONE
+  (killed earlier by the zero-size dummy-buffer fix at meta:1853-1860; the doc's
+  "full tensor mode hits a boot-time alloc assert" is now historical).
+- 25k needle: 25213 tok in 29.1s = ~875 t/s PREFILL, EXACT HIT 'HAWK-AMETHYST-8842'.
+  vs layer-mode lane baseline 437 t/s at 25k => 2.0x. (The old 1045 t/s figure was
+  quality-broken; 875 is the honest number WITH correctness.)
+- GQA fix active across ALL FA layers: 1320 alias lines; per-layer rotation handled
+  (different backends own [0,12) vs [12,24) per layer); probe shows post-fix geometry
+  (backend with 12 Q heads sees KV 1/2 => ratio 12=G => ok).
+- Second identical request answered from the prompt-checkpoint cache (1.4s) — the
+  cache feature works in tensor mode too.
+
+TWO-MODE LANE STATE: tensor-split prefill (875 t/s @ 25k, exact recall) + layer-split
+decode (54-59 t/s, existing lane) both proven. REMAINING before deploy: longer-length
+prefill points (50k/100k) + controlled fresh-prompt A/B vs layer mode on the same pool +
+balanced battery under GQA_FIX + the deploy decision (research binary + env on a toggle).
